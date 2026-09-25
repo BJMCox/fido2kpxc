@@ -365,7 +365,7 @@ fn installers() -> Result<()> {
 
 /// Runs the same CodeQL analysis as the codeql workflow, with the shared config, and fails on
 /// any finding. Needs the CodeQL bundle, the CLI with all query packs that GitHub's workflow uses,
-/// with `codeql` on the PATH. See "Run CodeQL locally" in the README.
+/// with `codeql` on the PATH. See "Run CodeQL locally" in CONTRIBUTING.md.
 fn codeql() -> Result<()> {
     let root = root();
     // The macOS place for rebuildable data. It sits outside the source tree, so extraction never

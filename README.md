@@ -8,13 +8,11 @@
 <a href="https://github.com/BJMCox/fido2kpxc/releases/latest"><img src="https://img.shields.io/github/v/release/BJMCox/fido2kpxc?label=release" alt="Latest release"></a>
 <a href="https://github.com/BJMCox/fido2kpxc/releases/latest"><img src="https://img.shields.io/github/release-date/BJMCox/fido2kpxc" alt="Release date"></a>
 <a href="LICENSE"><img src="https://img.shields.io/github/license/BJMCox/fido2kpxc" alt="License"></a>
-</p>
-<p align="center">
 <a href="#requirements"><img src="https://img.shields.io/badge/macOS-13%2B-black?logo=apple" alt="macOS 13+"></a>
 <a href="https://keepassxc.org"><img src="https://img.shields.io/badge/KeePassXC-2.7%2B-6cac4d?logo=keepassxc&logoColor=white" alt="KeePassXC 2.7+"></a>
 <a href="https://fidoalliance.org"><img src="https://img.shields.io/badge/FIDO2-hmac--secret-3269b3?logo=fidoalliance&logoColor=white" alt="FIDO2 hmac-secret"></a>
-<a href="#build"><img src="https://img.shields.io/badge/rust-1.89%2B-orange?logo=rust" alt="Rust 1.89+"></a>
-<a href="#build"><img src="https://img.shields.io/badge/binary-%3C%201%20MiB-informational" alt="Binary under 1 MiB"></a>
+<a href="CONTRIBUTING.md#build"><img src="https://img.shields.io/badge/rust-1.89%2B-orange?logo=rust" alt="Rust 1.89+"></a>
+<a href="CONTRIBUTING.md#build"><img src="https://img.shields.io/badge/binary-%3C%201%20MiB-informational" alt="Binary under 1 MiB"></a>
 <a href="https://github.com/BJMCox/fido2kpxc/security/dependabot"><img src="https://img.shields.io/badge/Dependabot-enabled-brightgreen?logo=dependabot" alt="Dependabot enabled"></a>
 <a href="https://github.com/BJMCox/fido2kpxc/commits/main"><img src="https://img.shields.io/github/last-commit/BJMCox/fido2kpxc" alt="Last commit"></a>
 <a href="https://github.com/BJMCox/fido2kpxc/issues"><img src="https://img.shields.io/github/issues/BJMCox/fido2kpxc" alt="Open issues"></a>
@@ -34,7 +32,7 @@ The vault encrypts each database password under a random data key, and each enro
 
 ## Install
 
-1. Download the `.dmg` or `.pkg` from the latest release. Drag the app from the `.dmg` to Applications, or open the `.pkg`, which installs a root-owned `/Applications/fido2kpxc.app` and runs no scripts. Both are self-signed, so on first launch, right-click the app and choose Open.
+1. Download the `.dmg` or `.pkg` from the latest release. Drag the app from the `.dmg` to Applications, or open the `.pkg`, which installs a root-owned `/Applications/fido2kpxc.app` and runs no scripts. Both are self-signed. On first launch, right-click the app and choose Open. If macOS blocks the downloaded `.pkg`, choose "Open Anyway" in System Settings > Privacy & Security.
 2. Choose "Settings…" in the menu and set the vault folder. The vault is `<folder>/vault.toml`, so give it a folder of its own. You can also edit `~/Library/Application Support/fido2kpxc/config.toml`:
 
    ```toml
@@ -58,7 +56,7 @@ The vault encrypts each database password under a random data key, and each enro
 
 5. Choose "Grant Accessibility…" and allow fido2kpxc in System Settings. "Start at Login" is optional.
 
-To use the vault on another Mac, sync or copy its folder there with any tool, install fido2kpxc, and set that Mac's folder path. You don't need to enroll again.
+To use the vault on another Mac, sync or copy its folder there with any tool, install fido2kpxc, and set that Mac's folder path. You do not need to enroll again.
 
 If two Macs change the vault at once, the sync tool may keep both versions, for example as `vault.sync-conflict-….toml` (Syncthing), `vault (… conflicted copy …).toml` (Dropbox), or `vault 2.toml` (iCloud). fido2kpxc then shows a warning icon and names the file in its menu, but unlocking keeps working. Keep the file with all your keys and passwords as `vault.toml`, delete the other, and add anything missing again.
 
@@ -84,7 +82,7 @@ With several keys plugged in, all of them blink. Touch the one to use, enter its
 
 ### Several databases
 
-The vault stores one password per database file name, which fido2kpxc reads from KeePassXC's unlock screen. The `*` entry covers every database without its own. Older vaults hold a single `*` entry and keep working.
+The vault stores one password per database file name, which fido2kpxc reads from KeePassXC's unlock screen. The `*` entry covers every database without its own.
 
 If you change a database password in KeePassXC, the stored one no longer works. With `autofill = "fill-and-unlock"`, fido2kpxc notices that KeePassXC refused it, quotes KeePassXC's message, and offers to store the new password.
 
@@ -124,65 +122,9 @@ sudo pkgutil --forget dev.fido2kpxc.pkg
 rm -rf ~/Library/Application\ Support/fido2kpxc
 ```
 
-A package copied with a sync tool, `scp`, or a USB drive has no quarantine flag, so Gatekeeper lets it install. A browser download needs approval under System Settings > Privacy & Security.
+## Build from source
 
-## Build
-
-You need Rust 1.89 or later from [rustup](https://rustup.rs), and the Xcode Command Line Tools (`xcode-select --install`), because the FIDO2 crate compiles C code and packaging uses `codesign`, `pkgbuild`, and `productbuild`.
-
-```sh
-git clone https://github.com/BJMCox/fido2kpxc.git
-cd fido2kpxc
-cargo test
-cargo build --release               # target/release/fido2kpxc, under 1 MiB
-cargo run -- enroll --label test    # terminal commands during development
-cargo run --release                 # the menu-bar app during development
-```
-
-Run unbundled, the app gets no Accessibility grant of its own (macOS gives it to your terminal), and "Start at Login" does not work.
-
-### Signing identity
-
-```sh
-cargo xtask cert
-```
-
-This creates a self-signed code-signing certificate, `fido2kpxc local signing`, in your login keychain once per build Mac, and asks for your password to trust it. A second run does nothing. Check it with `security find-identity -v -p codesigning`, and remove it with `security delete-identity -c "fido2kpxc local signing"`. macOS ties the Accessibility grant to this identity rather than to the binary, so rebuilds and upgrades signed with it keep the grant. Build local packages on one Mac, so they all carry the same identity.
-
-### App, package, and disk image
-
-```sh
-cargo xtask bundle     # target/bundle/fido2kpxc.app, signed
-cargo xtask package    # dist/fido2kpxc-<version>.pkg
-cargo xtask dmg        # dist/fido2kpxc-<version>.dmg, about 0.5 MB, LZMA
-cargo xtask icon       # only after editing assets/*.svg; needs rsvg-convert (brew install librsvg)
-```
-
-The disk image window layout lives in `assets/dmg/DS_Store`. After changing its background or icon positions, run `cargo xtask dmg-layout`, which lays out the window with Finder and saves the file. Terminal asks once for permission to control Finder.
-
-`codesign -d -r- target/bundle/fido2kpxc.app` should show `certificate leaf` in the designated requirement. A `cdhash` means the identity is missing. The version comes from `[workspace.package]` in `Cargo.toml`. The package installs only `/Applications/fido2kpxc.app`, with no config, vault, or scripts. Install a local package with `sudo installer -pkg dist/fido2kpxc-<version>.pkg -target /`.
-
-### Run CodeQL locally
-
-`cargo xtask codeql` runs the same analysis as the `codeql` workflow, with the shared config in `.github/codeql`, and fails on any finding. Run it before pushing. It needs the full CodeQL bundle, the CLI with every query pack, which GitHub's workflow uses too:
-
-```sh
-gh release download codeql-bundle-v2.27.1 -R github/codeql-action -p 'codeql-bundle-osx64.tar.zst*'
-shasum -a 256 -c codeql-bundle-osx64.tar.zst.checksum.txt
-mkdir -p ~/.codeql/bundle && tar -xf codeql-bundle-osx64.tar.zst -C ~/.codeql/bundle
-ln -s ~/.codeql/bundle/codeql/codeql ~/.local/bin/codeql
-cargo xtask codeql
-```
-
-A run takes about three minutes. Reports and databases stay in `~/Library/Caches/fido2kpxc/codeql`. Tests live in `tests.rs` files, which the config excludes because CodeQL does not recognize `#[cfg(test)]`.
-
-### Release
-
-1. Raise `version` under `[workspace.package]` in `Cargo.toml`, commit, and push to `main`.
-2. Run `cargo xtask release`. It checks that the tree is clean, `main` matches `origin/main`, and tag `v<version>` is new, then runs the tests and pushes the tag.
-3. Approve the `release` environment in GitHub Actions.
-
-The release workflow builds the tag on a GitHub-hosted runner through the reusable workflow `.github/workflows/build.yml`. It tests, signs, and builds the `.dmg` and `.pkg`, and creates their signed provenance. The signing identity sits in the `release` environment, which only `v*` tags can use, and only after approval.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
