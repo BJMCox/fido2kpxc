@@ -1,0 +1,80 @@
+# Reusable build workflow. It builds, signs, and attests the installers. Running the build in a
+# reusable workflow keeps the caller from tampering with it, which gives SLSA Build Level 3.
+# Verify a download with:
+#   gh attestation verify <file> --repo BJMCox/fido2kpxc \
+#     --signer-workflow BJMCox/fido2kpxc/.github/workflows/build.yml
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to build, such as v0.1.0
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build, sign, and attest
+    runs-on: macos-15
+    timeout-minutes: 30
+    # The signing identity lives in this environment, which only v* tags can use after approval.
+    environment: release
+    permissions:
+      contents: read # check out the tag
+      id-token: write # request the OIDC token that signs the provenance
+      attestations: write # store the provenance attestation
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Import the signing identity
+        env:
+          SIGNING_P12: ${{ secrets.SIGNING_P12 }}
+          SIGNING_P12_PASSWORD: ${{ secrets.SIGNING_P12_PASSWORD }}
+        run: |
+          if [ -z "$SIGNING_P12" ] || [ -z "$SIGNING_P12_PASSWORD" ]; then
+            echo "::error::The release environment's signing secrets did not reach this job."
+            exit 1
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(openssl rand -hex 16)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$SIGNING_P12" | base64 --decode > "$RUNNER_TEMP/identity.p12"
+          security import "$RUNNER_TEMP/identity.p12" -k "$keychain" -P "$SIGNING_P12_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/identity.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          # codesign only accepts the self-signed certificate once it is trusted for code signing.
+          security find-certificate -c "fido2kpxc local signing" -p "$keychain" > "$RUNNER_TEMP/signing.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/signing.pem"
+
+      - name: Build the installers
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: cargo xtask installers
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.dmg
+            dist/*.pkg
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installers
+          path: |
+            dist/*.dmg
+            dist/*.pkg
+            dist/SHA256SUMS
+          if-no-files-found: error

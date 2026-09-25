@@ -1,0 +1,46 @@
+[workspace]
+members = ["xtask"]
+default-members = ["."]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+license = "Apache-2.0"
+authors = ["Jessica Cox <jmcox@posteo.de>"]
+edition = "2024"
+rust-version = "1.89"
+
+[package]
+name = "fido2kpxc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Unlock KeePassXC with a FIDO2 security key PIN and touch"
+publish = false
+
+[dependencies]
+anyhow = "1"
+base64 = "0.23"
+chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
+ctap-hid-fido2 = "3.6"
+getrandom = "0.4"
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-application-services = "0.3"
+objc2-core-foundation = "0.3"
+objc2-foundation = "0.3"
+objc2-service-management = "0.3"
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+toml = "1"
+zeroize = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "z"
+panic = "abort"

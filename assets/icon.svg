@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- macOS icon grid: 824 px tile inside the 1024 px canvas -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#232937"/>
+  <!-- Touch disc with a keyhole cut through it -->
+  <path fill="#f0b43a" fill-rule="evenodd" d="M512 244a268 268 0 1 0 0 536a268 268 0 1 0 0-536Z M512 384a74 74 0 0 0-36 138.7L446 660q-2 12 10 12h112q12 0 10-12l-30-137.3A74 74 0 0 0 512 384Z"/>
+</svg>
