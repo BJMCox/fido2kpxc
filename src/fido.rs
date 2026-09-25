@@ -4,7 +4,8 @@ use anyhow::anyhow;
 use ctap_hid_fido2::fidokey::get_assertion::get_assertion_params::Extension as Gext;
 use ctap_hid_fido2::fidokey::make_credential::make_credential_params::Extension as Mext;
 use ctap_hid_fido2::fidokey::{GetAssertionArgsBuilder, MakeCredentialArgsBuilder};
-use ctap_hid_fido2::{FidoKeyHid, FidoKeyHidFactory, LibCfg};
+use ctap_hid_fido2::{FidoKeyHid, FidoKeyHidFactory, HidParam, LibCfg};
+use std::sync::{Arc, mpsc};
 use zeroize::Zeroizing;
 
 use crate::vault::Unlock;
@@ -51,9 +52,76 @@ impl fmt::Display for FidoError {
 
 impl std::error::Error for FidoError {}
 
+/// A plugged-in FIDO device, as the operating system names it.
+pub type Device = HidParam;
+
+/// Which plugged-in security key to talk to: the only one, or the one the user touched.
+#[derive(Clone)]
+pub struct Key(HidParam);
+
+/// The plugged-in FIDO security keys.
+pub fn devices() -> Vec<HidParam> {
+    ctap_hid_fido2::get_fidokey_devices()
+        .into_iter()
+        .map(|info| info.param)
+        .collect()
+}
+
+/// The key to use among `devices`. With one key it is that key. With several, every key blinks
+/// until the user touches one (CTAP 2.1 authenticatorSelection), and the others are cancelled.
+pub fn select(devices: Vec<HidParam>) -> Result<Key, FidoError> {
+    match devices.as_slice() {
+        [] => return Err(FidoError::NoDevice),
+        [only] => return Ok(Key(only.clone())),
+        _ => {}
+    }
+    let cfg = LibCfg::init();
+    let opened: Vec<(HidParam, Arc<FidoKeyHid>)> = devices
+        .into_iter()
+        .filter_map(|param| {
+            let device =
+                FidoKeyHidFactory::create_by_params(std::slice::from_ref(&param), &cfg).ok()?;
+            Some((param, Arc::new(device)))
+        })
+        .collect();
+    let (sender, touched) = mpsc::channel();
+    for (index, (_, device)) in opened.iter().enumerate() {
+        let (device, sender) = (Arc::clone(device), sender.clone());
+        std::thread::spawn(move || {
+            let _ = sender.send((index, device.selection()));
+        });
+    }
+    drop(sender);
+    let mut last_error = None;
+    for (index, result) in touched {
+        match result {
+            Ok(()) => {
+                // Stops the other keys blinking. A key that already answered ignores the cancel.
+                for (other, (_, device)) in opened.iter().enumerate() {
+                    if other != index {
+                        let _ = device.cancel_selection();
+                    }
+                }
+                return Ok(Key(opened[index].0.clone()));
+            }
+            Err(error) => last_error = Some(classify(error)),
+        }
+    }
+    // A key without authenticatorSelection (CTAP 2.0) cannot take part, so fall back to one key.
+    Err(match last_error {
+        Some(FidoError::Timeout) => FidoError::Timeout,
+        _ => FidoError::MultipleDevices,
+    })
+}
+
 /// Makes a non-resident hmac-secret credential and returns its output for `salt`. Needs two touches.
-pub fn enroll(pin: &str, salt: &[u8; 32], exclude: &[&[u8]]) -> Result<Unlock, FidoError> {
-    let device = device()?;
+pub fn enroll(
+    key: &Key,
+    pin: &str,
+    salt: &[u8; 32],
+    exclude: &[&[u8]],
+) -> Result<Unlock, FidoError> {
+    let device = open(key)?;
     let extensions = [Mext::HmacSecret(Some(true))];
     let challenge = challenge()?;
     let mut builder = MakeCredentialArgsBuilder::new(RP_ID, &challenge)
@@ -78,8 +146,13 @@ pub fn enroll(pin: &str, salt: &[u8; 32], exclude: &[&[u8]]) -> Result<Unlock, F
 }
 
 /// Returns the hmac-secret output of whichever enrolled credential the inserted key holds.
-pub fn derive(pin: &str, salt: &[u8; 32], cred_ids: &[&[u8]]) -> Result<Unlock, FidoError> {
-    assert_hmac(&device()?, pin, salt, cred_ids)
+pub fn derive(
+    key: &Key,
+    pin: &str,
+    salt: &[u8; 32],
+    cred_ids: &[&[u8]],
+) -> Result<Unlock, FidoError> {
+    assert_hmac(&open(key)?, pin, salt, cred_ids)
 }
 
 fn assert_hmac(
@@ -118,8 +191,9 @@ fn assert_hmac(
     Ok(Unlock { cred_id, output })
 }
 
-fn device() -> Result<FidoKeyHid, FidoError> {
-    FidoKeyHidFactory::create(&LibCfg::init()).map_err(classify)
+fn open(key: &Key) -> Result<FidoKeyHid, FidoError> {
+    FidoKeyHidFactory::create_by_params(std::slice::from_ref(&key.0), &LibCfg::init())
+        .map_err(classify)
 }
 
 fn challenge() -> Result<[u8; 32], FidoError> {
@@ -163,36 +237,4 @@ fn classify(error: anyhow::Error) -> FidoError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ctap_status_text_maps_to_ui_cases() {
-        let map = |text: &str| classify(anyhow!("{text}"));
-        assert!(matches!(map("FIDO device not found."), FidoError::NoDevice));
-        assert!(matches!(
-            map("0x31 CTAP2_ERR_PIN_INVALID   PIN Invalid."),
-            FidoError::WrongPin { .. }
-        ));
-        assert!(matches!(
-            map("0x32 CTAP2_ERR_PIN_BLOCKED PIN Blocked."),
-            FidoError::PinBlocked
-        ));
-        assert!(matches!(
-            map("0x34 CTAP2_ERR_PIN_AUTH_BLOCKED PIN authentication, pinAuth, blocked."),
-            FidoError::PinAuthBlocked
-        ));
-        assert!(matches!(
-            map("0x2E CTAP2_ERR_NO_CREDENTIALS    No valid credentials provided."),
-            FidoError::NotEnrolled
-        ));
-        assert!(matches!(
-            map("0x3A CTAP2_ERR_ACTION_TIMEOUT Maximum time for user action expired."),
-            FidoError::Timeout
-        ));
-        assert!(matches!(
-            map("read err = something else"),
-            FidoError::Other(_)
-        ));
-    }
-}
+mod tests;

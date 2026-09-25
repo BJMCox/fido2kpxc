@@ -15,10 +15,14 @@ fn main() -> Result<()> {
         Some("bundle") => bundle().map(|app| println!("Built {}", app.display())),
         Some("package") => package(&bundle()?).map(|pkg| println!("Built {}", pkg.display())),
         Some("dmg") => dmg(&bundle()?).map(|dmg| println!("Built {}", dmg.display())),
+        Some("dmg-layout") => dmg_layout(),
         Some("installers") => installers(),
+        Some("codeql") => codeql(),
         Some("release") => release(),
         Some("icon") => icon(),
-        _ => bail!("usage: cargo xtask <cert|icon|bundle|package|dmg|installers|release>"),
+        _ => bail!(
+            "usage: cargo xtask <cert|icon|bundle|package|dmg|dmg-layout|installers|release|codeql>"
+        ),
     }
 }
 
@@ -178,26 +182,51 @@ fn package(app: &Path) -> Result<PathBuf> {
     let dist = root.join("dist");
     fs::create_dir_all(&dist)?;
     let pkg = dist.join(format!("fido2kpxc-{VERSION}.pkg"));
+    let template = fs::read_to_string(root.join("assets/pkg/distribution.xml"))?;
+    let distribution = stage.join("distribution.xml");
+    fs::write(&distribution, template.replace("@VERSION@", VERSION))?;
     run(Command::new("/usr/bin/productbuild")
-        .arg("--package")
-        .arg(&core)
+        .arg("--distribution")
+        .arg(&distribution)
+        .arg("--resources")
+        .arg(root.join("assets/pkg/resources"))
+        .arg("--package-path")
+        .arg(&stage)
         .arg(&pkg))?;
     Ok(pkg)
 }
 
-/// A drag-install disk image: the signed app next to a link to /Applications.
-fn dmg(app: &Path) -> Result<PathBuf> {
+/// Puts the app, an Applications link, and the window assets in `stage`.
+fn stage_dmg(app: &Path, stage: &Path, layout: bool) -> Result<()> {
     let root = root();
-    let stage = root.join("target/dmg");
-    let _ = fs::remove_dir_all(&stage);
-    fs::create_dir_all(&stage)?;
+    let _ = fs::remove_dir_all(stage);
+    fs::create_dir_all(stage.join(".background"))?;
     run(Command::new("/usr/bin/ditto")
         .arg(app)
         .arg(stage.join("fido2kpxc.app")))?;
     std::os::unix::fs::symlink("/Applications", stage.join("Applications"))?;
-    fs::create_dir_all(root.join("dist"))?;
-    let dmg = root.join(format!("dist/fido2kpxc-{VERSION}.dmg"));
-    // LZMA on HFS+ is less than half the size of zlib on APFS. LZMA images need macOS 10.15+.
+    fs::copy(
+        root.join("assets/dmg/background.tiff"),
+        stage.join(".background/background.tiff"),
+    )?;
+    fs::copy(
+        root.join("assets/AppIcon.icns"),
+        stage.join(".VolumeIcon.icns"),
+    )?;
+    if layout {
+        fs::copy(root.join("assets/dmg/DS_Store"), stage.join(".DS_Store"))
+            .context("Missing assets/dmg/DS_Store. Run `cargo xtask dmg-layout` once")?;
+    }
+    Ok(())
+}
+
+/// A drag-install disk image: the signed app next to a link to /Applications, on a branded
+/// background, with the app icon as the volume icon.
+fn dmg(app: &Path) -> Result<PathBuf> {
+    let root = root();
+    let stage = root.join("target/dmg");
+    stage_dmg(app, &stage, true)?;
+    let writable = root.join("target/dmg-rw.dmg");
     run(Command::new("/usr/bin/hdiutil")
         .args([
             "create",
@@ -206,17 +235,99 @@ fn dmg(app: &Path) -> Result<PathBuf> {
             "-fs",
             "HFS+",
             "-format",
-            "ULMO",
+            "UDRW",
+            "-ov",
         ])
-        .args(["-ov", "-srcfolder"])
+        .arg("-srcfolder")
         .arg(&stage)
-        .arg(&dmg))?;
+        .arg(&writable))?;
+    // Finder shows .VolumeIcon.icns only when the volume root carries the custom-icon flag.
+    let mount = root.join("target/dmg-mount");
+    run(Command::new("/usr/bin/hdiutil")
+        .args(["attach", "-nobrowse", "-noautoopen", "-mountpoint"])
+        .arg(&mount)
+        .arg(&writable))?;
+    let flagged = run(Command::new("/usr/bin/SetFile")
+        .args(["-a", "C"])
+        .arg(&mount));
+    run(Command::new("/usr/bin/hdiutil")
+        .args(["detach", "-quiet"])
+        .arg(&mount))?;
+    flagged?;
+    fs::create_dir_all(root.join("dist"))?;
+    let dmg = root.join(format!("dist/fido2kpxc-{VERSION}.dmg"));
+    // LZMA is less than half the size of zlib here. LZMA images need macOS 10.15+.
+    run(Command::new("/usr/bin/hdiutil")
+        .args(["convert", "-format", "ULMO", "-ov", "-o"])
+        .arg(&dmg)
+        .arg(&writable))?;
     // A stray copy with the same bundle ID confuses LaunchServices.
     fs::remove_dir_all(&stage)?;
+    fs::remove_file(&writable)?;
     run(Command::new("/usr/bin/codesign")
         .args(["--force", "--sign", IDENTITY])
         .arg(&dmg))?;
     Ok(dmg)
+}
+
+/// Lays out the disk image window with Finder and saves the result as assets/dmg/DS_Store.
+/// Run it once, and again only after changing the background or icon positions.
+fn dmg_layout() -> Result<()> {
+    let root = root();
+    let stage = root.join("target/dmg");
+    stage_dmg(&bundle()?, &stage, false)?;
+    let writable = root.join("target/dmg-layout.dmg");
+    run(Command::new("/usr/bin/hdiutil")
+        .args([
+            "create",
+            "-volname",
+            "fido2kpxc",
+            "-fs",
+            "HFS+",
+            "-format",
+            "UDRW",
+            "-ov",
+        ])
+        .arg("-srcfolder")
+        .arg(&stage)
+        .arg(&writable))?;
+    run(Command::new("/usr/bin/hdiutil")
+        .args(["attach", "-noautoopen"])
+        .arg(&writable))?;
+    // Bounds include the title bar, so the content area matches the 540 x 380 background.
+    let script = r#"tell application "Finder"
+        tell disk "fido2kpxc"
+            open
+            set current view of container window to icon view
+            set toolbar visible of container window to false
+            set statusbar visible of container window to false
+            set the bounds of container window to {200, 120, 740, 528}
+            set options to the icon view options of container window
+            set arrangement of options to not arranged
+            set icon size of options to 112
+            set text size of options to 13
+            set background picture of options to file ".background:background.tiff"
+            set position of item "fido2kpxc.app" of container window to {140, 170}
+            set position of item "Applications" of container window to {400, 170}
+            update without registering applications
+            delay 2
+            close
+        end tell
+    end tell"#;
+    let laid_out = run(Command::new("/usr/bin/osascript").args(["-e", script])).and_then(|_| {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        fs::copy(
+            "/Volumes/fido2kpxc/.DS_Store",
+            root.join("assets/dmg/DS_Store"),
+        )
+        .context("Finder wrote no .DS_Store")
+    });
+    run(Command::new("/usr/bin/hdiutil").args(["detach", "-quiet", "/Volumes/fido2kpxc"]))?;
+    laid_out?;
+    fs::remove_dir_all(&stage)?;
+    fs::remove_file(&writable)?;
+    println!("Saved assets/dmg/DS_Store");
+    Ok(())
 }
 
 /// Builds the app once, then both installers and SHA256SUMS in dist/. CI runs this for releases.
@@ -249,6 +360,56 @@ fn installers() -> Result<()> {
         names.join(", "),
         dist.display()
     );
+    Ok(())
+}
+
+/// Runs the same CodeQL analysis as the codeql workflow, with the shared config, and fails on
+/// any finding. Needs the CodeQL bundle, the CLI with all query packs that GitHub's workflow uses,
+/// with `codeql` on the PATH. See "Run CodeQL locally" in the README.
+fn codeql() -> Result<()> {
+    let root = root();
+    // The macOS place for rebuildable data. It sits outside the source tree, so extraction never
+    // reads its own databases, and keeps the reports and databases for inspection after a run.
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    let out = PathBuf::from(home).join("Library/Caches/fido2kpxc/codeql");
+    fs::create_dir_all(&out)?;
+    let config = root.join(".github/codeql/codeql-config.yml");
+    let mut findings = Vec::new();
+    for language in ["rust", "actions"] {
+        let database = out.join(language);
+        println!("CodeQL: analyzing {language}…");
+        run(Command::new("codeql")
+            .current_dir(&root)
+            .args(["database", "create", "--overwrite", "--build-mode=none"])
+            .arg(format!("--language={language}"))
+            .arg(format!("--codescanning-config={}", config.display()))
+            .arg("--source-root=.")
+            .arg(&database))?;
+        let csv = out.join(format!("{language}.csv"));
+        run(Command::new("codeql")
+            .args(["database", "analyze", "--format=csv"])
+            .arg(format!("--output={}", csv.display()))
+            .arg(&database)
+            .arg(format!(
+                "codeql/{language}-queries:codeql-suites/{language}-security-extended.qls"
+            )))?;
+        findings.extend(
+            fs::read_to_string(&csv)?
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| format!("{language}: {line}")),
+        );
+    }
+    for finding in &findings {
+        println!("{finding}");
+    }
+    println!("Reports and databases: {}", out.display());
+    ensure!(
+        findings.is_empty(),
+        "CodeQL reported {} finding(s)",
+        findings.len()
+    );
+    println!("CodeQL: no findings");
     Ok(())
 }
 
@@ -307,12 +468,32 @@ fn icon() -> Result<()> {
         .args(["-c", "icns", "-o"])
         .arg(root.join("assets/AppIcon.icns"))
         .arg(&set))?;
-    run(Command::new("rsvg-convert")
-        .args(["-f", "pdf"])
-        .arg(root.join("assets/menubar.svg"))
-        .arg("-o")
-        .arg(root.join("assets/menubar.pdf")))?;
-    println!("Built assets/AppIcon.icns and assets/menubar.pdf");
+    for name in ["menubar", "menubar-warning"] {
+        run(Command::new("rsvg-convert")
+            .args(["-f", "pdf"])
+            .arg(root.join(format!("assets/{name}.svg")))
+            .arg("-o")
+            .arg(root.join(format!("assets/{name}.pdf"))))?;
+    }
+    // The installer logo, at 1x and 2x in one TIFF so Installer picks the sharp one.
+    let logo = |pixels: &str, name: &str| {
+        run(Command::new("rsvg-convert")
+            .args(["-w", pixels, "-h", pixels])
+            .arg(root.join("assets/icon.svg"))
+            .arg("-o")
+            .arg(set.join(name)))
+    };
+    logo("128", "logo.png")?;
+    logo("256", "logo@2x.png")?;
+    run(Command::new("/usr/bin/tiffutil")
+        .arg("-cathidpicheck")
+        .arg(set.join("logo.png"))
+        .arg(set.join("logo@2x.png"))
+        .arg("-out")
+        .arg(root.join("assets/pkg/resources/logo.tiff")))?;
+    println!(
+        "Built assets/AppIcon.icns, assets/menubar.pdf, assets/menubar-warning.pdf, and assets/pkg/resources/logo.tiff"
+    );
     Ok(())
 }
 

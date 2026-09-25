@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fido2kpxc</title>
+<meta name="description" content="Unlock KeePassXC on macOS with a FIDO2 security key of any brand.">
+<meta property="og:title" content="fido2kpxc">
+<meta property="og:description" content="Unlock KeePassXC on macOS with a FIDO2 security key of any brand.">
+<meta property="og:image" content="https://raw.githubusercontent.com/BJMCox/fido2kpxc/main/assets/social-preview.png">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #232937;
+    --panel: #2c3344;
+    --text: #f5f5f7;
+    --muted: #aab1c3;
+    --gold: #f0b43a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 17px/1.55 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 48px 16px 64px; }
+  a { color: var(--gold); }
+  header { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; }
+  header img { width: 132px; height: 132px; }
+  h1 { font-size: 56px; line-height: 1; margin: 0 0 10px; letter-spacing: -1px; }
+  .tagline { color: var(--muted); font-size: 22px; margin: 0; }
+  .actions { display: flex; gap: 12px; flex-wrap: wrap; margin: 32px 0 48px; }
+  .button {
+    display: inline-block; padding: 11px 20px; border-radius: 10px;
+    font-weight: 600; text-decoration: none; border: 1px solid var(--gold);
+  }
+  .button.primary { background: var(--gold); color: var(--bg); }
+  h2 { font-size: 24px; margin: 48px 0 16px; }
+  ol.steps { counter-reset: step; list-style: none; padding: 0; display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  ol.steps li { counter-increment: step; background: var(--panel); border-radius: 12px; padding: 18px; }
+  ol.steps li::before { content: counter(step); display: block; color: var(--gold);
+    font-weight: 700; font-size: 28px; margin-bottom: 4px; }
+  ul.facts { padding-left: 20px; }
+  ul.facts li { margin-bottom: 8px; }
+  ul.facts li::marker { color: var(--gold); }
+  code { font: 15px ui-monospace, Menlo, monospace; background: var(--panel); padding: 2px 6px; border-radius: 6px; }
+  pre { background: var(--panel); padding: 14px 16px; border-radius: 10px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  dialog::backdrop { background: rgb(0 0 0 / 0.55); }
+  footer { color: var(--muted); font-size: 14px; margin-top: 56px; }
+  @media (max-width: 520px) {
+    h1 { font-size: 42px; }
+    header img { width: 96px; height: 96px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="logo.svg" alt="">
+    <div>
+      <h1>fido2kpxc</h1>
+      <p class="tagline">Unlock KeePassXC on macOS with a FIDO2 security key.</p>
+    </div>
+  </header>
+
+  <div class="actions">
+    <a class="button primary" href="https://github.com/BJMCox/fido2kpxc/releases/latest">Download</a>
+    <a class="button" href="https://github.com/BJMCox/fido2kpxc#readme">Read the README</a>
+  </div>
+
+  <p>fido2kpxc is a small menu-bar app. It keeps your KeePassXC database passwords in a vault that only your security keys can open, and fills in the password when KeePassXC asks for it.</p>
+
+  <h2>How it works</h2>
+  <ol class="steps">
+    <li>KeePassXC shows its unlock screen. fido2kpxc asks for your key's PIN.</li>
+    <li>Your key blinks. Touch it.</li>
+    <li>fido2kpxc fills in the database password and presses Unlock.</li>
+  </ol>
+
+  <h2>Details</h2>
+  <ul class="facts">
+    <li>Works with any FIDO2 key that supports hmac-secret and has a PIN, for example YubiKey, Token2, or Google Titan.</li>
+    <li>Enroll a backup key of any brand. With several keys plugged in, touch the one to use.</li>
+    <li>Stores one password per database file, plus an optional catch-all.</li>
+    <li>Never uses the clipboard, unless you turn on "Copy Password".</li>
+    <li>Fills in the password only after it checks KeePassXC's code signature.</li>
+    <li>Sync the vault folder with any tool to use it on another Mac.</li>
+    <li>A single binary under 1 MiB, written in Rust. Apache-2.0.</li>
+  </ul>
+
+  <h2>Install</h2>
+  <p>You need macOS 13 or later on a Mac with Apple silicon, and KeePassXC 2.7 or later. Download the <code>.dmg</code> or <code>.pkg</code> from the latest release. The app is self-signed, so the first time, right-click it and choose Open. Then choose "Set Up…" in its menu.</p>
+
+  <h2>Verify a download</h2>
+  <p>GitHub Actions builds every release from its tag and signs SLSA Build Level 3 provenance for it:</p>
+  <pre><code>gh attestation verify fido2kpxc-&lt;version&gt;.dmg --repo BJMCox/fido2kpxc \
+  --signer-workflow BJMCox/fido2kpxc/.github/workflows/build.yml</code></pre>
+
+  <footer>
+    Copyright 2026 Jessica Cox. <a href="https://github.com/BJMCox/fido2kpxc">Source on GitHub</a>.
+    Not affiliated with KeePassXC or the FIDO Alliance.
+  </footer>
+</main>
+<script src="os-check.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <!-- GitHub social preview. Upload the PNG under Settings > General > Social preview. -->
+  <rect width="1280" height="640" fill="#232937"/>
+  <g transform="translate(330 320) scale(0.82) translate(-512 -512)">
+  <g transform="translate(0 43)">
+    <rect x="446" y="174" width="132" height="150" rx="22" fill="#f0b43a"/>
+    <path fill="#f0b43a" fill-rule="evenodd" d="M452 300h120a72 72 0 0 1 72 72v320a72 72 0 0 1-72 72h-120a72 72 0 0 1-72-72v-320a72 72 0 0 1 72-72Z M512 408a86 86 0 1 0 0.1 0Z"/>
+    <!-- "XC" for KeePassXC, drawn as strokes inside the touch disc -->
+    <path fill="none" stroke="#f0b43a" stroke-width="16" stroke-linecap="round" d="M453 458L505 530M505 458L453 530M571.1 468.5A30.5 36 0 1 0 571.1 519.5"/>
+  </g>
+  </g>
+  <text x="600" y="300" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="104" font-weight="700" fill="#f5f5f7">fido2kpxc</text>
+  <text x="604" y="372" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="38" fill="#aab1c3">Unlock KeePassXC with a</text>
+  <text x="604" y="420" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="38" fill="#aab1c3">FIDO2 security key</text>
+</svg>

@@ -12,6 +12,19 @@ pub enum Autofill {
     FillAndUnlock,
 }
 
+impl Autofill {
+    pub const ALL: [Autofill; 3] = [Autofill::FillAndUnlock, Autofill::Fill, Autofill::Off];
+
+    /// The value as written in the config file.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Autofill::Off => "off",
+            Autofill::Fill => "fill",
+            Autofill::FillAndUnlock => "fill-and-unlock",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -58,6 +71,45 @@ impl Config {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("Cannot read config {}", path.display()))?;
         Self::parse(&text, &home()?).with_context(|| format!("Invalid config {}", path.display()))
+    }
+
+    /// The config file for these settings, with the same comments as [`TEMPLATE`].
+    /// `folder` is kept as typed, so a `~/` path stays portable between Macs.
+    pub fn render(
+        folder: &str,
+        autofill: Autofill,
+        copy_password: bool,
+        clear_seconds: u64,
+    ) -> String {
+        let folder = toml::Value::String(folder.to_owned());
+        format!(
+            "# fido2kpxc settings. The app rereads this file every 2 seconds.\n\n\
+             # Required: the folder that holds vault.toml.\nfolder = {folder}\n\n\
+             # Seconds before Copy Password clears the clipboard, at most 3600.\nclear_seconds = {clear_seconds}\n\n\
+             # What happens when KeePassXC asks for its password: \"off\", \"fill\", or \"fill-and-unlock\".\n\
+             autofill = \"{}\"\n\n\
+             # Show \"Copy Password\" in the menu. It puts the password on the clipboard for clear_seconds.\n\
+             copy_password = {copy_password}\n",
+            autofill.as_str()
+        )
+    }
+
+    /// Validates `text` as a config, as `load` would.
+    pub fn check(text: &str) -> Result<Self> {
+        Self::parse(text, &home()?)
+    }
+
+    /// Replaces the config file atomically.
+    pub fn write(path: &Path, text: &str) -> Result<()> {
+        let dir = path.parent().context("The config path has no directory")?;
+        std::fs::create_dir_all(dir)?;
+        let mut temp = tempfile::Builder::new()
+            .prefix(".config-")
+            .tempfile_in(dir)?;
+        std::io::Write::write_all(&mut temp, text.as_bytes())?;
+        temp.as_file().sync_all()?;
+        temp.persist(path)?;
+        Ok(())
     }
 
     /// Writes [`TEMPLATE`] to `path` unless a config already exists there.
@@ -112,49 +164,4 @@ fn home() -> Result<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn vault_lives_in_the_configured_folder() {
-        let config = Config::parse(r#"folder = "/s""#, Path::new("/h")).unwrap();
-        assert_eq!(config.vault, Path::new("/s/vault.toml"));
-        assert_eq!(config.clear_seconds, 20);
-        assert_eq!(config.autofill, Autofill::FillAndUnlock);
-        assert!(!config.copy_password);
-    }
-
-    #[test]
-    fn template_documents_every_key_with_its_default() {
-        let uncommented = TEMPLATE
-            .replace("# copy_password", "copy_password")
-            .replace("# folder", "folder")
-            .replace("# clear", "clear")
-            .replace("# autofill", "autofill");
-        let config = Config::parse(&uncommented, Path::new("/Users/me")).unwrap();
-        assert_eq!(
-            config.vault,
-            Path::new("/Users/me/Synced/fido2kpxc/vault.toml")
-        );
-        assert_eq!(config.clear_seconds, default_clear_seconds());
-        assert_eq!(config.autofill, Autofill::default());
-        assert!(!config.copy_password);
-    }
-
-    #[test]
-    fn clear_delay_beyond_an_hour_is_rejected() {
-        let text = "folder = \"/s\"\nclear_seconds = 9223372036854775807";
-        assert!(Config::parse(text, Path::new("/h")).is_err());
-    }
-
-    #[test]
-    fn tilde_expands_to_home() {
-        let config = Config::parse(
-            "folder = \"~/Synced\"\nautofill = \"fill\"",
-            Path::new("/Users/me"),
-        )
-        .unwrap();
-        assert_eq!(config.vault, Path::new("/Users/me/Synced/vault.toml"));
-        assert_eq!(config.autofill, Autofill::Fill);
-    }
-}
+mod tests;

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a vulnerability
+    url: https://github.com/BJMCox/fido2kpxc/security/advisories/new
+    about: Report security problems privately.
+  - name: KeePassXC issues
+    url: https://github.com/keepassxreboot/keepassxc/issues
+    about: Problems with KeePassXC itself, when fido2kpxc is not running.

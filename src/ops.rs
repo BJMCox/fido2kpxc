@@ -4,12 +4,18 @@
 use anyhow::{Result, ensure};
 
 use crate::config::Config;
-use crate::fido;
+use crate::fido::{self, Key};
 use crate::vault::{ANY, Unlock, Vault};
+
+/// The security key to use: the only one plugged in, or the one the user touches among several.
+pub fn choose_key() -> Result<Key> {
+    Ok(fido::select(fido::devices())?)
+}
 
 /// Creates the vault with its first key. Needs two touches.
 pub fn create(
     config: &Config,
+    key: &Key,
     label: &str,
     database: &str,
     secret: &[u8],
@@ -17,7 +23,7 @@ pub fn create(
 ) -> Result<()> {
     check_new(config)?;
     let salt = Vault::new_salt()?;
-    let unlock = fido::enroll(pin, &salt, &[])?;
+    let unlock = fido::enroll(key, pin, &salt, &[])?;
     Vault::create(salt, label, &unlock, database, secret)?.save(&config.vault, true)
 }
 
@@ -33,26 +39,26 @@ pub fn check_new(config: &Config) -> Result<()> {
 }
 
 /// Derives the output of whichever enrolled key is inserted. Needs one touch.
-pub fn derive(config: &Config, pin: &str) -> Result<Unlock> {
+pub fn derive(config: &Config, key: &Key, pin: &str) -> Result<Unlock> {
     let vault = Vault::load(&config.vault)?;
-    Ok(fido::derive(pin, &vault.salt(), &vault.cred_ids())?)
+    Ok(fido::derive(key, pin, &vault.salt(), &vault.cred_ids())?)
 }
 
 /// Derives the output of the key enrolled as `cred_id`. Needs one touch.
-pub fn derive_one(config: &Config, cred_id: &[u8], pin: &str) -> Result<Unlock> {
+pub fn derive_one(config: &Config, key: &Key, cred_id: &[u8], pin: &str) -> Result<Unlock> {
     let vault = Vault::load(&config.vault)?;
-    Ok(fido::derive(pin, &vault.salt(), &[cred_id])?)
+    Ok(fido::derive(key, pin, &vault.salt(), &[cred_id])?)
 }
 
 /// Enrolls the inserted key as `label`, unlocking with `current`. Needs two touches.
-pub fn add_key(config: &Config, current: &Unlock, label: &str, pin: &str) -> Result<()> {
+pub fn add_key(config: &Config, key: &Key, current: &Unlock, label: &str, pin: &str) -> Result<()> {
     let mut vault = Vault::load(&config.vault)?;
     // Checked before the touches, which vault.add_key would only reach afterwards.
     ensure!(
         vault.entries().iter().all(|(l, _)| *l != label),
         "Label {label:?} already exists"
     );
-    let new = fido::enroll(pin, &vault.salt(), &vault.cred_ids())?;
+    let new = fido::enroll(key, pin, &vault.salt(), &vault.cred_ids())?;
     vault.add_key(current, label, &new)?;
     vault.save(&config.vault, false)
 }
@@ -81,9 +87,15 @@ pub fn keys_to_touch(config: &Config, label: &str) -> Result<Vec<(String, Vec<u8
 }
 
 /// Stores the password for `database`. Needs one touch.
-pub fn set_secret(config: &Config, database: &str, secret: &[u8], pin: &str) -> Result<()> {
+pub fn set_secret(
+    config: &Config,
+    key: &Key,
+    database: &str,
+    secret: &[u8],
+    pin: &str,
+) -> Result<()> {
     let mut vault = Vault::load(&config.vault)?;
-    let unlock = fido::derive(pin, &vault.salt(), &vault.cred_ids())?;
+    let unlock = fido::derive(key, pin, &vault.salt(), &vault.cred_ids())?;
     vault.set_secret(&unlock, database, secret)?;
     vault.save(&config.vault, false)
 }

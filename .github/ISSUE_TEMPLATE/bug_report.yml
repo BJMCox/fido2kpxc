@@ -1,0 +1,31 @@
+name: Bug report
+description: Something does not work as the README describes.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report security problems privately under Security > Report a vulnerability, not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: |
+        Choose "Copy Diagnostics" in the fido2kpxc menu while KeePassXC shows its unlock screen, and paste the result. It includes the fido2kpxc, macOS, and KeePassXC versions. It holds no passwords or key material, but it shows file paths, key labels, and database names. Edit them if you want.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: key
+    attributes:
+      label: Security key
+      description: Brand and model, for example YubiKey 5C NFC or Token2 T2F2.
+    validations:
+      required: true

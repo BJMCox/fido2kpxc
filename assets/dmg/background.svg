@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="540" height="380" viewBox="0 0 540 380">
+  <!-- Disk image window background. The app icon sits at (140, 170), Applications at (400, 170). -->
+  <rect width="540" height="380" fill="#232937"/>
+  <path fill="none" stroke="#f0b43a" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" d="M222 170H312M292 150L314 170L292 190"/>
+  <text x="270" y="318" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="17" fill="#aab1c3">Drag fido2kpxc to Applications</text>
+</svg>

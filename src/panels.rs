@@ -7,14 +7,17 @@ use objc2::runtime::{AnyObject, Sel};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSBackingStoreType, NSButton, NSEvent, NSEventModifierFlags,
-    NSFloatingWindowLevel, NSImage, NSPanel, NSPopUpButton, NSResponder, NSSecureTextField,
-    NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSFloatingWindowLevel, NSImage, NSImageView, NSPanel, NSPopUpButton, NSResponder,
+    NSSecureTextField, NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObject, NSPoint, NSRect, NSSize, NSString, ns_string};
 
 const WIDTH: f64 = 420.0;
 const MARGIN: f64 = 20.0;
 const EYE: f64 = 24.0;
+/// The app icon on each panel's left, as native alerts show it. A genuine fido2kpxc prompt is
+/// then recognizable at a glance.
+const ICON: f64 = 56.0;
 
 define_class!(
     /// A panel that handles Cmd+V, C, X, A, and Z itself. A menu-bar app has no Edit menu,
@@ -56,39 +59,57 @@ fn edit_action(event: &NSEvent) -> Option<Sel> {
 
 pub struct Field<'a> {
     pub label: &'a str,
-    pub secure: bool,
-    pub value: &'a str,
-    /// For secure fields: the action of an eye button that shows or hides the text.
-    /// The button's tag is the field's index.
-    pub reveal: Option<Sel>,
+    pub kind: Kind<'a>,
+}
+
+pub enum Kind<'a> {
+    Text {
+        value: &'a str,
+        secure: bool,
+        /// For secure fields: the action of an eye button that shows or hides the text.
+        /// The button's tag is the field's index.
+        reveal: Option<Sel>,
+    },
+    /// A pop-up menu. Its value is the selected option.
+    Choice {
+        options: Vec<String>,
+        selected: usize,
+    },
 }
 
 impl<'a> Field<'a> {
     pub fn plain(label: &'a str, value: &'a str) -> Self {
-        Self {
-            label,
-            secure: false,
+        let kind = Kind::Text {
             value,
+            secure: false,
             reveal: None,
-        }
+        };
+        Self { label, kind }
     }
 
     pub fn secret(label: &'a str) -> Self {
-        Self {
-            label,
-            secure: true,
+        let kind = Kind::Text {
             value: "",
+            secure: true,
             reveal: None,
-        }
+        };
+        Self { label, kind }
     }
 
     /// A secret field with an eye button, for long passwords that are easy to mistype.
     pub fn revealable(label: &'a str, action: Sel) -> Self {
+        let kind = Kind::Text {
+            value: "",
+            secure: true,
+            reveal: Some(action),
+        };
+        Self { label, kind }
+    }
+
+    pub fn choice(label: &'a str, options: Vec<String>, selected: usize) -> Self {
         Self {
             label,
-            secure: true,
-            value: "",
-            reveal: Some(action),
+            kind: Kind::Choice { options, selected },
         }
     }
 }
@@ -104,40 +125,55 @@ pub enum Key {
     Escape,
 }
 
+enum Control {
+    Text {
+        field: Retained<NSTextField>,
+        /// For revealable fields: a plain field at the same spot, shown while the text is visible.
+        plain: Option<Retained<NSTextField>>,
+        eye: Option<Retained<NSButton>>,
+    },
+    Choice(Retained<NSPopUpButton>),
+}
+
 pub struct Form {
     pub panel: Retained<NSPanel>,
-    pub fields: Vec<Retained<NSTextField>>,
-    /// For revealable fields: a plain field at the same spot, shown while the text is visible.
-    plain: Vec<Option<Retained<NSTextField>>>,
-    eyes: Vec<Option<Retained<NSButton>>>,
-    pub choice: Option<Retained<NSPopUpButton>>,
+    controls: Vec<Control>,
 }
 
 impl Form {
-    /// Reads every field, then clears them, so typed secrets do not linger in the controls.
+    /// Reads every field in order, then clears the text fields, so typed secrets do not linger.
+    /// A choice field yields its selected option.
     pub fn take_values(&self) -> Vec<zeroize::Zeroizing<String>> {
-        self.fields
+        self.controls
             .iter()
-            .zip(&self.plain)
-            .map(|(field, plain)| {
-                let visible = plain.as_ref().filter(|p| !p.isHidden()).unwrap_or(field);
-                let value = zeroize::Zeroizing::new(visible.stringValue().to_string());
-                field.setStringValue(ns_string!(""));
-                if let Some(plain) = plain {
-                    plain.setStringValue(ns_string!(""));
+            .map(|control| match control {
+                Control::Text { field, plain, .. } => {
+                    let visible = plain.as_ref().filter(|p| !p.isHidden()).unwrap_or(field);
+                    let value = zeroize::Zeroizing::new(visible.stringValue().to_string());
+                    field.setStringValue(ns_string!(""));
+                    if let Some(plain) = plain {
+                        plain.setStringValue(ns_string!(""));
+                    }
+                    value
                 }
-                value
+                Control::Choice(popup) => zeroize::Zeroizing::new(
+                    popup
+                        .titleOfSelectedItem()
+                        .map(|t| t.to_string())
+                        .unwrap_or_default(),
+                ),
             })
             .collect()
     }
 
     /// Shows or hides the text of revealable field `index`, moving its text across.
     pub fn toggle_reveal(&self, index: usize) {
-        let (Some(secure), Some(Some(plain)), Some(Some(eye))) = (
-            self.fields.get(index),
-            self.plain.get(index),
-            self.eyes.get(index),
-        ) else {
+        let Some(Control::Text {
+            field: secure,
+            plain: Some(plain),
+            eye: Some(eye),
+        }) = self.controls.get(index)
+        else {
             return;
         };
         let showing = !plain.isHidden();
@@ -154,34 +190,29 @@ impl Form {
         eye.setImage(eye_image(!showing).as_deref());
     }
 
-    pub fn chosen(&self) -> Option<String> {
-        let choice = self.choice.as_ref()?;
-        Some(choice.titleOfSelectedItem()?.to_string())
-    }
-
     pub fn close(&self) {
         self.panel.orderOut(None);
     }
 }
 
-/// Builds and shows a panel: `message` on top, one row per field, an optional choice menu,
-/// and `buttons` right-aligned at the bottom. Buttons send their actions to `target`.
+/// Builds and shows a panel: `message` on top, one row per field, and `buttons` right-aligned
+/// at the bottom. Buttons send their actions to `target`.
 pub fn form(
     mtm: MainThreadMarker,
     target: &AnyObject,
     title: &str,
     message: &str,
     fields: &[Field],
-    choices: &[String],
     buttons: &[Button],
 ) -> Form {
     let rect = |x, y, w, h| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
+    let text_left = MARGIN + ICON + 14.0;
     let text = NSTextField::wrappingLabelWithString(&NSString::from_str(message), mtm);
-    text.setPreferredMaxLayoutWidth(WIDTH - 2.0 * MARGIN);
+    text.setPreferredMaxLayoutWidth(WIDTH - text_left - MARGIN);
     let text_height = text.fittingSize().height;
-    let rows = fields.len() + usize::from(!choices.is_empty());
+    let head_height = text_height.max(ICON);
     let buttons_height = if buttons.is_empty() { 0.0 } else { 44.0 };
-    let height = MARGIN + text_height + 12.0 + rows as f64 * 32.0 + buttons_height + 12.0;
+    let height = MARGIN + head_height + 12.0 + fields.len() as f64 * 32.0 + buttons_height + 12.0;
 
     let mask = NSWindowStyleMask::Titled | NSWindowStyleMask::NonactivatingPanel;
     let panel: Retained<KeyPanel> = unsafe {
@@ -203,79 +234,102 @@ pub fn form(
     panel.setAutorecalculatesKeyViewLoop(true);
     let content = panel.contentView().expect("panels have a content view");
 
-    let mut top = height - MARGIN - text_height;
-    text.setFrame(rect(MARGIN, top, WIDTH - 2.0 * MARGIN, text_height));
+    let head_top = height - MARGIN;
+    if let Some(icon) = NSApplication::sharedApplication(mtm).applicationIconImage() {
+        let view = NSImageView::imageViewWithImage(&icon, mtm);
+        view.setFrame(rect(MARGIN, head_top - ICON, ICON, ICON));
+        content.addSubview(&view);
+    }
+    text.setFrame(rect(
+        text_left,
+        head_top - text_height,
+        WIDTH - text_left - MARGIN,
+        text_height,
+    ));
     content.addSubview(&text);
-    top -= 12.0;
+    let mut top = head_top - head_height - 12.0;
 
-    let (mut controls, mut plains, mut eyes) = (Vec::new(), Vec::new(), Vec::new());
+    let mut controls = Vec::new();
+    let mut first_text = None;
     for (index, field) in fields.iter().enumerate() {
         top -= 24.0;
         let label = NSTextField::labelWithString(&NSString::from_str(field.label), mtm);
         label.setFrame(rect(MARGIN, top + 2.0, 110.0, 20.0));
         content.addSubview(&label);
-        let eye_space = if field.reveal.is_some() {
-            EYE + 4.0
-        } else {
-            0.0
-        };
-        let frame = rect(
-            MARGIN + 116.0,
-            top,
-            WIDTH - 2.0 * MARGIN - 116.0 - eye_space,
-            24.0,
-        );
-        let control: Retained<NSTextField> = if field.secure {
-            Retained::into_super(NSSecureTextField::initWithFrame(
-                NSSecureTextField::alloc(mtm),
-                frame,
-            ))
-        } else {
-            NSTextField::initWithFrame(NSTextField::alloc(mtm), frame)
-        };
-        control.setStringValue(&NSString::from_str(field.value));
-        content.addSubview(&control);
-        let (plain, eye) = match field.reveal {
-            Some(action) => {
-                let plain = NSTextField::initWithFrame(NSTextField::alloc(mtm), frame);
-                plain.setHidden(true);
-                content.addSubview(&plain);
-                let eye = unsafe {
-                    NSButton::buttonWithTitle_target_action(
-                        ns_string!(""),
-                        Some(target),
-                        Some(action),
-                        mtm,
-                    )
+        let control = match &field.kind {
+            Kind::Text {
+                value,
+                secure,
+                reveal,
+            } => {
+                let eye_space = if reveal.is_some() { EYE + 4.0 } else { 0.0 };
+                let frame = rect(
+                    MARGIN + 116.0,
+                    top,
+                    WIDTH - 2.0 * MARGIN - 116.0 - eye_space,
+                    24.0,
+                );
+                let text_field: Retained<NSTextField> = if *secure {
+                    Retained::into_super(NSSecureTextField::initWithFrame(
+                        NSSecureTextField::alloc(mtm),
+                        frame,
+                    ))
+                } else {
+                    NSTextField::initWithFrame(NSTextField::alloc(mtm), frame)
                 };
-                eye.setBordered(false);
-                eye.setImage(eye_image(false).as_deref());
-                eye.setTag(index as isize);
-                eye.setFrame(rect(WIDTH - MARGIN - EYE, top, EYE, 24.0));
-                content.addSubview(&eye);
-                (Some(plain), Some(eye))
+                text_field.setStringValue(&NSString::from_str(value));
+                content.addSubview(&text_field);
+                first_text.get_or_insert_with(|| text_field.clone());
+                let (plain, eye) = match reveal {
+                    Some(action) => {
+                        let plain = NSTextField::initWithFrame(NSTextField::alloc(mtm), frame);
+                        plain.setHidden(true);
+                        content.addSubview(&plain);
+                        let eye = unsafe {
+                            NSButton::buttonWithTitle_target_action(
+                                ns_string!(""),
+                                Some(target),
+                                Some(*action),
+                                mtm,
+                            )
+                        };
+                        eye.setBordered(false);
+                        eye.setImage(eye_image(false).as_deref());
+                        eye.setTag(index as isize);
+                        eye.setFrame(rect(WIDTH - MARGIN - EYE, top, EYE, 24.0));
+                        content.addSubview(&eye);
+                        (Some(plain), Some(eye))
+                    }
+                    None => (None, None),
+                };
+                Control::Text {
+                    field: text_field,
+                    plain,
+                    eye,
+                }
             }
-            None => (None, None),
+            Kind::Choice { options, selected } => {
+                let popup = NSPopUpButton::initWithFrame_pullsDown(
+                    NSPopUpButton::alloc(mtm),
+                    rect(
+                        MARGIN + 112.0,
+                        top - 1.0,
+                        WIDTH - 2.0 * MARGIN - 112.0,
+                        26.0,
+                    ),
+                    false,
+                );
+                for option in options {
+                    popup.addItemWithTitle(&NSString::from_str(option));
+                }
+                popup.selectItemAtIndex(*selected as isize);
+                content.addSubview(&popup);
+                Control::Choice(popup)
+            }
         };
         controls.push(control);
-        plains.push(plain);
-        eyes.push(eye);
         top -= 8.0;
     }
-
-    let choice = (!choices.is_empty()).then(|| {
-        top -= 26.0;
-        let popup = NSPopUpButton::initWithFrame_pullsDown(
-            NSPopUpButton::alloc(mtm),
-            rect(MARGIN + 112.0, top, WIDTH - 2.0 * MARGIN - 112.0, 26.0),
-            false,
-        );
-        for item in choices {
-            popup.addItemWithTitle(&NSString::from_str(item));
-        }
-        content.addSubview(&popup);
-        popup
-    });
 
     let mut right = WIDTH - MARGIN + 6.0;
     for button in buttons {
@@ -298,16 +352,10 @@ pub fn form(
 
     panel.center();
     panel.makeKeyAndOrderFront(None);
-    if let Some(first) = controls.first() {
+    if let Some(first) = &first_text {
         panel.makeFirstResponder(Some(first));
     }
-    Form {
-        panel,
-        fields: controls,
-        plain: plains,
-        eyes,
-        choice,
-    }
+    Form { panel, controls }
 }
 
 fn eye_image(showing: bool) -> Option<Retained<NSImage>> {

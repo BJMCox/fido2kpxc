@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- xtask package replaces @VERSION@. -->
+<installer-gui-script minSpecVersion="2">
+    <title>fido2kpxc</title>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <background file="logo.tiff" alignment="bottomleft" scaling="none"/>
+    <background-darkAqua file="logo.tiff" alignment="bottomleft" scaling="none"/>
+    <!-- The binary is arm64 only, so Installer refuses Intel Macs instead of installing an app that cannot run. -->
+    <options customize="never" require-scripts="false" hostArchitectures="arm64"/>
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="13.0"/>
+        </allowed-os-versions>
+    </volume-check>
+    <domains enable_localSystem="true" enable_anywhere="false" enable_currentUserHome="false"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="dev.fido2kpxc.pkg"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="dev.fido2kpxc.pkg" visible="false">
+        <pkg-ref id="dev.fido2kpxc.pkg"/>
+    </choice>
+    <pkg-ref id="dev.fido2kpxc.pkg" version="@VERSION@" onConclusion="none">fido2kpxc-core.pkg</pkg-ref>
+</installer-gui-script>

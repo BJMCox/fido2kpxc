@@ -65,23 +65,26 @@ fn enroll(label: &str, database: &str) -> Result<()> {
     let config = Config::load(&Config::path()?)?;
     ops::check_new(&config)?;
     let secret = new_secret()?;
+    let key = choose_key()?;
     let pin = hidden("FIDO2 PIN: ")?;
     println!("Touch your security key twice.");
-    ops::create(&config, label, database, secret.as_bytes(), &pin)?;
+    ops::create(&config, &key, label, database, secret.as_bytes(), &pin)?;
     println!("Created {}", config.vault.display());
     Ok(())
 }
 
 fn enroll_key(label: &str) -> Result<()> {
     let config = Config::load(&Config::path()?)?;
+    let key = choose_key()?;
     let pin = hidden("PIN of an enrolled security key: ")?;
     println!("Touch the enrolled security key.");
-    let current = ops::derive(&config, &pin)?;
-    println!("Swap to the new security key, then press Enter.");
+    let current = ops::derive(&config, &key, &pin)?;
+    println!("Plug in the new security key, then press Enter.");
     std::io::stdin().lock().read_line(&mut String::new())?;
+    let key = choose_key()?;
     let pin = hidden("PIN of the new security key: ")?;
     println!("Touch the new security key twice.");
-    ops::add_key(&config, &current, label, &pin)?;
+    ops::add_key(&config, &key, &current, label, &pin)?;
     println!("Added key {label:?}");
     Ok(())
 }
@@ -93,9 +96,10 @@ fn remove_key(label: &str) -> Result<()> {
     for (other, cred_id) in ops::keys_to_touch(&config, label)? {
         println!("Insert the key {other:?}, then press Enter.");
         std::io::stdin().lock().read_line(&mut String::new())?;
+        let key = choose_key()?;
         let pin = hidden(&format!("PIN of {other:?}: "))?;
         println!("Touch the key {other:?}.");
-        remaining.push(ops::derive_one(&config, &cred_id, &pin)?);
+        remaining.push(ops::derive_one(&config, &key, &cred_id, &pin)?);
     }
     ops::remove_key(&config, label, &remaining)?;
     println!("Removed key {label:?} and moved the vault to a new data key.");
@@ -126,9 +130,10 @@ fn list_databases() -> Result<()> {
 fn set_secret(database: &str) -> Result<()> {
     let config = Config::load(&Config::path()?)?;
     let secret = new_secret()?;
+    let key = choose_key()?;
     let pin = hidden("FIDO2 PIN: ")?;
     println!("Touch your security key.");
-    ops::set_secret(&config, database, secret.as_bytes(), &pin)?;
+    ops::set_secret(&config, &key, database, secret.as_bytes(), &pin)?;
     println!("Stored the password for {}", ops::describe(database));
     Ok(())
 }
@@ -140,6 +145,15 @@ fn remove_secret(database: &str) -> Result<()> {
     vault.save(&config.vault, false)?;
     println!("Removed the password for {}", ops::describe(database));
     Ok(())
+}
+
+/// Picks the security key before its PIN is asked, as the FIDO standard flow does. With several
+/// keys plugged in, the user touches the one to use.
+fn choose_key() -> Result<fido::Key> {
+    if fido::devices().len() > 1 {
+        println!("Touch the security key you want to use.");
+    }
+    ops::choose_key()
 }
 
 fn new_secret() -> Result<Zeroizing<String>> {
@@ -159,37 +173,4 @@ fn hidden(prompt: &str) -> Result<Zeroizing<String>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn completion_script_offers_every_command_in_the_usage() {
-        let commands = USAGE
-            .split(['[', '|', ']'])
-            .skip(1)
-            .filter_map(|part| part.split_whitespace().next())
-            // Nested `[--option VALUE]` groups are options, not commands.
-            .filter(|word| !word.starts_with('-'));
-        for command in commands {
-            assert!(
-                COMPLETIONS.contains(&format!("'{command}:")),
-                "{command} is missing"
-            );
-        }
-    }
-
-    #[test]
-    fn completion_script_offers_every_option() {
-        let options = USAGE
-            .split_whitespace()
-            .map(|word| word.trim_matches(['[', ']', '|']))
-            .filter(|word| word.starts_with("--"))
-            .chain(["--help", "-h"]);
-        for option in options {
-            assert!(
-                COMPLETIONS.contains(&format!(" {option}")),
-                "{option} is missing"
-            );
-        }
-    }
-}
+mod tests;

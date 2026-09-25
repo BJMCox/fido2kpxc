@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<style>
+  body { font: 13px -apple-system, sans-serif; }
+  h1 { font-size: 17px; margin: 0 0 8px; }
+  code { font: 12px ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+<h1>Unlock KeePassXC with a FIDO2 security key</h1>
+<p>fido2kpxc keeps your KeePassXC database passwords in a vault that only your security keys can open. When KeePassXC shows its unlock screen, fido2kpxc asks for the key's PIN and a touch, then fills in the password and unlocks the database. It never uses the clipboard unless you turn on "Copy Password".</p>
+<p>It works with any FIDO2 key that supports hmac-secret and has a PIN, for example YubiKey, Token2, or Google Titan.</p>
+<p>This package installs <code>/Applications/fido2kpxc.app</code> and nothing else. It runs no scripts and writes no settings. It needs macOS 13 or later on a Mac with Apple silicon.</p>
+</body>
+</html>

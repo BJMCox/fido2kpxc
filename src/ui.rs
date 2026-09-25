@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{
@@ -14,7 +14,9 @@ use objc2_app_kit::{
     NSPasteboardContentsOptions, NSPasteboardTypeString, NSStatusBar, NSStatusItem,
     NSVariableStatusItemLength,
 };
-use objc2_foundation::{NSData, NSObject, NSObjectProtocol, NSSize, NSString, NSTimer, ns_string};
+use objc2_foundation::{
+    NSData, NSObject, NSObjectProtocol, NSProcessInfo, NSSize, NSString, NSTimer, ns_string,
+};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 use zeroize::Zeroizing;
 
@@ -26,6 +28,7 @@ use crate::panels::{self, Button, Field, Form, Key};
 use crate::vault::{ANY, Unlock, Vault};
 
 const TICK_SECONDS: f64 = 0.25;
+const REPOSITORY: &str = "https://github.com/BJMCox/fido2kpxc";
 // Stops the refocus after a closed dialog from reopening it at once.
 const SUPPRESS: Duration = Duration::from_secs(3);
 const RECHECK: Duration = Duration::from_secs(2);
@@ -76,16 +79,30 @@ enum Step {
         collected: Vec<Unlock>,
     },
     SetPassword,
+    /// `draft` holds the values of a rejected attempt, so the form reopens with them.
+    Settings {
+        draft: Option<Vec<String>>,
+    },
 }
 
 /// A key-management operation on the worker thread, and what follows it.
 struct Job {
     next: Next,
-    touch: Form,
+    touch: Option<Form>,
     result: Receiver<Result<Outcome>>,
 }
 
+/// What continues once the security key for a flow is known.
+enum AfterKey {
+    Unlock(Target),
+    Setup(Step),
+}
+
 enum Next {
+    /// Counted the plugged-in keys. One key continues at once, several need a touch to choose.
+    Devices(AfterKey),
+    /// The user touched the key to use.
+    Chosen(AfterKey),
     Report(String),
     AskNewKey,
     Collect {
@@ -98,6 +115,8 @@ enum Next {
 enum Outcome {
     Done,
     Unlock(Unlock),
+    Devices(Vec<fido::Device>),
+    Key(fido::Key),
 }
 
 struct Menu {
@@ -109,6 +128,7 @@ struct Menu {
     manage: Vec<Retained<NSMenuItem>>,
     item: Retained<NSStatusItem>,
     key_icon: Option<Retained<NSImage>>,
+    warning_icon: Option<Retained<NSImage>>,
 }
 
 /// Runs all security-key work on one long-lived thread. hidapi binds its global HID manager
@@ -143,6 +163,8 @@ struct State {
     message: Option<Message>,
     setup: Option<Setup>,
     job: Option<Job>,
+    /// The security key the current flow uses, chosen before its PIN is asked.
+    key: Option<fido::Key>,
     suppress_until: Option<Instant>,
     clear: Option<(Instant, isize)>,
     menu: Option<Menu>,
@@ -218,10 +240,13 @@ define_class!(
                 Ok((_, vault)) if !pin.is_empty() => vault,
                 _ => return self.done(asking.target),
             };
+            let Some(key) = self.ivars().borrow().key.clone() else {
+                return self.done(asking.target);
+            };
             let (sender, result) = mpsc::channel();
             let database = asking.database;
             self.ivars().borrow().worker.run(move || {
-                let secret = fido::derive(&pin, &vault.salt(), &vault.cred_ids())
+                let secret = fido::derive(&key, &pin, &vault.salt(), &vault.cred_ids())
                     .and_then(|unlock| {
                         vault
                             .open(&unlock, database.as_deref())
@@ -263,21 +288,25 @@ define_class!(
 
         #[unsafe(method(setUp:))]
         fn set_up(&self, _sender: &AnyObject) {
+            self.begin_flow();
             self.open_setup(Step::Create, None);
         }
 
         #[unsafe(method(addKey:))]
         fn add_key(&self, _sender: &AnyObject) {
+            self.begin_flow();
             self.open_setup(Step::AddCurrent, None);
         }
 
         #[unsafe(method(removeKey:))]
         fn remove_key(&self, _sender: &AnyObject) {
+            self.begin_flow();
             self.open_setup(Step::RemoveChoose, None);
         }
 
         #[unsafe(method(setPassword:))]
         fn set_password(&self, _sender: &AnyObject) {
+            self.begin_flow();
             self.open_setup(Step::SetPassword, None);
         }
 
@@ -305,6 +334,11 @@ define_class!(
             }
         }
 
+        #[unsafe(method(openSettings:))]
+        fn open_settings(&self, _sender: &AnyObject) {
+            self.open_setup(Step::Settings { draft: None }, None);
+        }
+
         #[unsafe(method(openConfig:))]
         fn open_config(&self, _sender: &AnyObject) {
             let result = Config::path().and_then(|path| {
@@ -330,9 +364,39 @@ define_class!(
             }
         }
 
+        #[unsafe(method(copyDiagnostics:))]
+        fn copy_diagnostics(&self, _sender: &AnyObject) {
+            let report = self.diagnostics();
+            let pasteboard = NSPasteboard::generalPasteboard();
+            pasteboard.clearContents();
+            pasteboard.setString_forType(&NSString::from_str(&report), unsafe { NSPasteboardTypeString });
+            self.alert("Copied diagnostics to the clipboard. They contain no passwords or key material.");
+        }
+
         #[unsafe(method(showHelp:))]
         fn show_help(&self, _sender: &AnyObject) {
             self.alert(&help_text());
+        }
+
+        #[unsafe(method(showAbout:))]
+        fn show_about(&self, _sender: &AnyObject) {
+            self.close_message();
+            let text = format!(
+                "fido2kpxc {}\nUnlock KeePassXC with a FIDO2 security key.\n\nCopyright 2026 Jessica Cox <jmcox@posteo.de>\nLicensed under the Apache License, Version 2.0.",
+                env!("CARGO_PKG_VERSION")
+            );
+            let buttons = [
+                Button { title: "OK", action: sel!(messageDismiss:), key: Key::Return },
+                Button { title: "Source Code", action: sel!(openRepository:), key: Key::Escape },
+            ];
+            let form = panels::form(self.mtm(), self, "About fido2kpxc", &text, &[], &buttons);
+            self.ivars().borrow_mut().message = Some(Message { form, retry: None });
+        }
+
+        #[unsafe(method(openRepository:))]
+        fn open_repository(&self, _sender: &AnyObject) {
+            self.close_message();
+            let _ = open(&[], std::path::Path::new(REPOSITORY));
         }
 
         #[unsafe(method(quit:))]
@@ -381,7 +445,9 @@ impl Controller {
             }
         };
         if let Some((job, result)) = job_done {
-            job.touch.close();
+            if let Some(touch) = &job.touch {
+                touch.close();
+            }
             self.after_job(job.next, result);
         }
 
@@ -447,19 +513,103 @@ impl Controller {
         let (Some(menu), Some((_, health))) = (state.menu.as_ref(), state.health.as_ref()) else {
             return;
         };
-        let image = match (health, &menu.key_icon) {
-            (Ok(_), Some(icon)) => Some(icon.clone()),
-            (Ok(_), None) => NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        let (icon, fallback, description) = match health {
+            Ok(_) => (
+                &menu.key_icon,
                 ns_string!("key.fill"),
-                Some(ns_string!("fido2kpxc")),
+                ns_string!("fido2kpxc"),
             ),
-            (Err(_), _) => NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            Err(_) => (
+                &menu.warning_icon,
                 ns_string!("exclamationmark.triangle.fill"),
-                Some(ns_string!("fido2kpxc: needs attention")),
+                ns_string!("fido2kpxc: needs attention"),
             ),
         };
+        let image = icon.clone().or_else(|| {
+            NSImage::imageWithSystemSymbolName_accessibilityDescription(fallback, Some(description))
+        });
         if let Some(button) = menu.item.button(self.mtm()) {
             button.setImage(image.as_deref());
+        }
+    }
+
+    /// A plain-text report for bug reports. It lists names and states, never secrets.
+    fn diagnostics(&self) -> String {
+        let mut lines = vec![
+            format!("fido2kpxc {} diagnostics", env!("CARGO_PKG_VERSION")),
+            format!(
+                "macOS: {}",
+                NSProcessInfo::processInfo().operatingSystemVersionString()
+            ),
+        ];
+        match Config::path().and_then(|path| Config::load(&path).map(|config| (path, config))) {
+            Err(error) => lines.push(format!("Config: {error:#}")),
+            Ok((path, config)) => {
+                lines.push(format!("Config: {} (loads)", path.display()));
+                lines.push(format!(
+                    "Autofill: {:?}, Copy Password: {}, clear after {} s",
+                    config.autofill, config.copy_password, config.clear_seconds
+                ));
+                match Vault::load(&config.vault) {
+                    Err(error) => lines.push(format!("Vault: {error:#}")),
+                    Ok(vault) => {
+                        let keys: Vec<&str> = vault
+                            .entries()
+                            .into_iter()
+                            .map(|(label, _)| label)
+                            .collect();
+                        lines.push(format!("Vault: {} (loads)", config.vault.display()));
+                        lines.push(format!("Keys: {}", keys.join(", ")));
+                        lines.push(format!(
+                            "Stored passwords: {}",
+                            vault.databases().join(", ")
+                        ));
+                    }
+                }
+            }
+        }
+        lines.push(format!(
+            "Accessibility: {}",
+            if kpxc::accessibility_trusted() {
+                "granted"
+            } else {
+                "not granted"
+            }
+        ));
+        let login =
+            unsafe { SMAppService::mainAppService().status() } == SMAppServiceStatus::Enabled;
+        lines.push(format!("Start at Login: {login}"));
+        lines.extend(kpxc::diagnose());
+        lines.join("\n") + "\n"
+    }
+
+    fn open_setup_fresh(&self, step: Step, note: Option<&str>) {
+        self.begin_flow();
+        self.open_setup(step, note);
+    }
+
+    /// Validates and writes the settings form, or reopens it with the problem and the typed values.
+    fn save_settings(&self, draft: Vec<String>) {
+        let autofill = AUTOFILL_LABELS
+            .iter()
+            .position(|label| *label == draft[1])
+            .map_or(Autofill::default(), |i| Autofill::ALL[i]);
+        let problem = match draft[3].trim().parse::<u64>() {
+            Err(_) => Some("Clear after must be a whole number of seconds.".to_owned()),
+            Ok(clear) => {
+                let text = Config::render(draft[0].trim(), autofill, draft[2] == "On", clear);
+                Config::check(&text)
+                    .and_then(|_| Config::write(&Config::path()?, &text))
+                    .err()
+                    .map(|error| format!("{error:#}"))
+            }
+        };
+        match problem {
+            Some(problem) => self.open_setup(Step::Settings { draft: Some(draft) }, Some(&problem)),
+            None => {
+                self.check_health(true);
+                self.alert("Saved the settings.");
+            }
         }
     }
 
@@ -476,23 +626,37 @@ impl Controller {
         if self.busy() {
             return;
         }
-        let config = match Config::path().and_then(|path| Config::load(&path)) {
-            Ok(config) => config,
-            Err(error) => return self.alert(&format!("{error:#}\n\nChoose Open Config… first.")),
+        if needs_key(&step) && self.ivars().borrow().key.is_none() {
+            return self.with_key(AfterKey::Setup(step));
+        }
+        // Settings must open even without a working config, so they can fix it.
+        let loaded = Config::path().and_then(|path| Config::load(&path));
+        let config = match (&step, loaded) {
+            (Step::Settings { .. }, loaded) => loaded.ok(),
+            (_, Ok(config)) => Some(config),
+            (_, Err(error)) => {
+                return self.alert(&format!("{error:#}\n\nChoose Settings… first."));
+            }
         };
-        let vault = Vault::load(&config.vault);
-        if !matches!(step, Step::Create)
-            && let Err(error) = &vault
+        let vault = config.as_ref().map(|c| Vault::load(&c.vault));
+        if !matches!(step, Step::Create | Step::Settings { .. })
+            && let Some(Err(error)) = &vault
         {
             return self.alert(&format!("{error:#}\n\nChoose Set Up… first."));
         }
+        let vault = vault.and_then(Result::ok);
+        let (folder_value, clear_value, autofill_index, copy_index) =
+            settings_values(&step, config.as_ref());
         let pin = Field::secret("PIN");
         let password = Field::revealable("Password", sel!(toggleReveal:));
         let repeat = Field::revealable("Repeat", sel!(toggleReveal:));
         let database = Field::plain("Database file", "");
-        let (message, fields, choices, submit) = match &step {
+        let (message, fields, submit) = match &step {
             Step::Create => {
-                if let Err(error) = ops::check_new(&config) {
+                let Some(config) = &config else {
+                    return;
+                };
+                if let Err(error) = ops::check_new(config) {
                     return self.alert(&format!("{error:#}"));
                 }
                 let text = format!(
@@ -500,18 +664,16 @@ impl Controller {
                     config.vault.display()
                 );
                 let label = Field::plain("Key label", "primary");
-                (text, vec![label, database, password, repeat, pin], Vec::new(), "Set Up")
+                (text, vec![label, database, password, repeat, pin], "Set Up")
             }
             Step::AddCurrent => (
                 "Insert a security key that is already enrolled, and enter its PIN. Then touch it.".to_owned(),
                 vec![pin],
-                Vec::new(),
                 "Continue",
             ),
             Step::AddNew { .. } => (
                 "Remove the enrolled key and insert the new one. Enter a label for it and its PIN, then touch it twice.".to_owned(),
                 vec![Field::plain("Key label", ""), pin],
-                Vec::new(),
                 "Add Key",
             ),
             Step::RemoveChoose => {
@@ -521,15 +683,13 @@ impl Controller {
                     .unwrap_or_default();
                 (
                     "Choose the key to remove. Afterwards, each remaining key needs its PIN and a touch.".to_owned(),
-                    Vec::new(),
-                    labels,
+                    vec![Field::choice("Key", labels, 0)],
                     "Continue",
                 )
             }
             Step::RemoveTouch { left, .. } => (
                 format!("Insert the key \"{}\", enter its PIN, then touch it.", left[0].0),
                 vec![pin],
-                Vec::new(),
                 "Continue",
             ),
             Step::SetPassword => {
@@ -540,7 +700,20 @@ impl Controller {
                 let text = format!(
                     "Enter the database file name, such as pdb.kdbx, and its password. Leave the name blank for any other database. Stored now: {stored}. Then touch your security key."
                 );
-                (text, vec![database, password, repeat, pin], Vec::new(), "Save")
+                (text, vec![database, password, repeat, pin], "Save")
+            }
+            Step::Settings { .. } => {
+                let path = Config::path().map_or_else(|_| "the config file".to_owned(), |p| p.display().to_string());
+                let text = format!(
+                    "The vault lives in the vault folder as vault.toml. A path starting with ~/ works on every Mac. Settings are saved to {path}."
+                );
+                let fields = vec![
+                    Field::plain("Vault folder", &folder_value),
+                    Field::choice("Autofill", AUTOFILL_LABELS.map(str::to_owned).to_vec(), autofill_index),
+                    Field::choice("Copy Password", vec!["Off".to_owned(), "On".to_owned()], copy_index),
+                    Field::plain("Clear after (s)", &clear_value),
+                ];
+                (text, fields, "Save")
             }
         };
         let message = match note {
@@ -554,7 +727,6 @@ impl Controller {
             "fido2kpxc",
             &message,
             &fields,
-            &choices,
             &[
                 Button {
                     title: submit,
@@ -578,12 +750,16 @@ impl Controller {
             return;
         };
         let values = form.take_values();
-        let chosen = form.chosen();
         form.close();
+        if let Step::Settings { .. } = step {
+            return self.save_settings(values.iter().map(|v| v.to_string()).collect());
+        }
         let Ok(config) = Config::path().and_then(|path| Config::load(&path)) else {
             return;
         };
         let owned = |i: usize| Zeroizing::new(values[i].trim().to_owned());
+        // Steps that ask for a PIN run only after their key was chosen, so the key is set here.
+        let key = self.ivars().borrow().key.clone();
         match step {
             Step::Create => {
                 let (label, database, pin) = (owned(0), database_or_any(&values[1]), owned(4));
@@ -597,10 +773,17 @@ impl Controller {
                 let report = format!("Created the vault at {}.", config.vault.display());
                 self.spawn(
                     Next::Report(report),
-                    "Touch your security key twice.",
+                    Some("Touch your security key twice."),
                     move || {
-                        ops::create(&config, &label, &database, secret.as_bytes(), &pin)
-                            .map(|()| Outcome::Done)
+                        ops::create(
+                            &config,
+                            &key.context("No security key was chosen")?,
+                            &label,
+                            &database,
+                            secret.as_bytes(),
+                            &pin,
+                        )
+                        .map(|()| Outcome::Done)
                     },
                 );
             }
@@ -611,8 +794,11 @@ impl Controller {
                 }
                 self.spawn(
                     Next::AskNewKey,
-                    "Touch the enrolled security key.",
-                    move || ops::derive(&config, &pin).map(Outcome::Unlock),
+                    Some("Touch the enrolled security key."),
+                    move || {
+                        ops::derive(&config, &key.context("No security key was chosen")?, &pin)
+                            .map(Outcome::Unlock)
+                    },
                 );
             }
             Step::AddNew { current } => {
@@ -626,16 +812,23 @@ impl Controller {
                 let report = format!("Added key {:?}.", label.as_str());
                 self.spawn(
                     Next::Report(report),
-                    "Touch the new security key twice.",
-                    move || ops::add_key(&config, &current, &label, &pin).map(|()| Outcome::Done),
+                    Some("Touch the new security key twice."),
+                    move || {
+                        ops::add_key(
+                            &config,
+                            &key.context("No security key was chosen")?,
+                            &current,
+                            &label,
+                            &pin,
+                        )
+                        .map(|()| Outcome::Done)
+                    },
                 );
             }
             Step::RemoveChoose => {
-                let Some(label) = chosen else {
-                    return;
-                };
+                let label = values[0].to_string();
                 match ops::keys_to_touch(&config, &label) {
-                    Ok(left) => self.open_setup(
+                    Ok(left) => self.open_setup_fresh(
                         Step::RemoveTouch {
                             label,
                             left,
@@ -670,10 +863,19 @@ impl Controller {
                         left,
                         collected,
                     },
-                    &touch,
-                    move || ops::derive_one(&config, &cred_id, &pin).map(Outcome::Unlock),
+                    Some(&touch),
+                    move || {
+                        ops::derive_one(
+                            &config,
+                            &key.context("No security key was chosen")?,
+                            &cred_id,
+                            &pin,
+                        )
+                        .map(Outcome::Unlock)
+                    },
                 );
             }
+            Step::Settings { .. } => {}
             Step::SetPassword => {
                 let (database, pin) = (database_or_any(&values[0]), owned(3));
                 let secret = Zeroizing::new(values[1].to_string());
@@ -685,10 +887,16 @@ impl Controller {
                 let report = format!("Stored the password for {}.", ops::describe(&database));
                 self.spawn(
                     Next::Report(report),
-                    "Touch your security key.",
+                    Some("Touch your security key."),
                     move || {
-                        ops::set_secret(&config, &database, secret.as_bytes(), &pin)
-                            .map(|()| Outcome::Done)
+                        ops::set_secret(
+                            &config,
+                            &key.context("No security key was chosen")?,
+                            &database,
+                            secret.as_bytes(),
+                            &pin,
+                        )
+                        .map(|()| Outcome::Done)
                     },
                 );
             }
@@ -699,14 +907,14 @@ impl Controller {
     fn spawn(
         &self,
         next: Next,
-        touch: &str,
+        touch: Option<&str>,
         work: impl FnOnce() -> Result<Outcome> + Send + 'static,
     ) {
         let (sender, result) = mpsc::channel();
         self.ivars().borrow().worker.run(move || {
             let _ = sender.send(work());
         });
-        let touch = touch_form(self.mtm(), self, touch);
+        let touch = touch.map(|text| touch_form(self.mtm(), self, text));
         self.ivars().borrow_mut().job = Some(Job {
             next,
             touch,
@@ -716,12 +924,42 @@ impl Controller {
 
     fn after_job(&self, next: Next, result: Result<Outcome>) {
         match (next, result) {
+            (Next::Devices(after) | Next::Chosen(after), Err(error)) => {
+                if let AfterKey::Unlock(target) = after {
+                    return self.show(&format!("{error:#}"), Some(target));
+                }
+                self.alert(&format!("{error:#}"));
+            }
             (_, Err(error)) => self.alert(&format!("{error:#}")),
+            (Next::Devices(after), Ok(Outcome::Devices(devices))) => {
+                if devices.len() > 1 {
+                    let touch = "Touch the security key you want to use.";
+                    return self.spawn(Next::Chosen(after), Some(touch), move || {
+                        Ok(Outcome::Key(fido::select(devices)?))
+                    });
+                }
+                match fido::select(devices) {
+                    Ok(key) => {
+                        self.ivars().borrow_mut().key = Some(key);
+                        self.continue_with_key(after);
+                    }
+                    Err(error) => match after {
+                        AfterKey::Unlock(target) => self.show(&error.to_string(), Some(target)),
+                        AfterKey::Setup(_) => self.alert(&error.to_string()),
+                    },
+                }
+            }
+            (Next::Chosen(after), Ok(Outcome::Key(key))) => {
+                self.ivars().borrow_mut().key = Some(key);
+                self.continue_with_key(after);
+            }
             (Next::Report(report), Ok(_)) => {
                 self.check_health(true);
                 self.alert(&report);
             }
             (Next::AskNewKey, Ok(Outcome::Unlock(current))) => {
+                // The new key is a different key, so it is chosen again.
+                self.begin_flow();
                 self.open_setup(Step::AddNew { current }, None);
             }
             (
@@ -734,6 +972,8 @@ impl Controller {
             ) => {
                 collected.push(unlock);
                 if !left.is_empty() {
+                    // Each remaining key is a different key, so it is chosen again.
+                    self.begin_flow();
                     return self.open_setup(
                         Step::RemoveTouch {
                             label,
@@ -749,22 +989,74 @@ impl Controller {
                 let report = format!(
                     "Removed key {label:?} and moved the vault to a new data key. If the key was lost, change the database password in KeePassXC, then choose Set Database Password…."
                 );
-                self.spawn(Next::Report(report), "Saving the vault…", move || {
-                    ops::remove_key(&config, &label, &collected).map(|()| Outcome::Done)
-                });
+                self.spawn(
+                    Next::Report(report),
+                    Some("Saving the vault…"),
+                    move || ops::remove_key(&config, &label, &collected).map(|()| Outcome::Done),
+                );
             }
             (_, Ok(_)) => self.alert("The operation returned an unexpected result."),
         }
     }
 
-    /// Opens the PIN panel. `pin_submit` derives and decrypts on a worker thread.
+    /// Starts an unlock or copy. A retry after a wrong PIN (`message`) reuses the chosen key and
+    /// goes straight to the PIN panel. A new attempt first chooses the key, as the FIDO flow does.
     fn start(&self, target: Target, message: Option<&str>) {
-        let busy = self.busy();
+        if message.is_none() {
+            if self.busy() || !self.ready_for(&target) {
+                return;
+            }
+            self.begin_flow();
+            return self.with_key(AfterKey::Unlock(target));
+        }
+        self.pin_panel(target, message);
+    }
+
+    /// Checks that a password exists for the target's database before any key is touched.
+    fn ready_for(&self, target: &Target) -> bool {
         // A broken config or vault keeps the app idle. The menu shows the error.
         let Ok((_, vault)) = load() else {
-            return;
+            return false;
         };
-        if busy {
+        let database = match target {
+            Target::Fill => self.ivars().borrow().kpxc.database(),
+            Target::Copy(database) => Some(database.clone()),
+        };
+        if vault.has_secret_for(database.as_deref()) {
+            return true;
+        }
+        let name = database.as_deref().unwrap_or("this database");
+        self.alert(&format!(
+            "No password is stored for {name}. Add one with Set Database Password… in the menu, or run:\nfido2kpxc set-secret --database {name}"
+        ));
+        self.done(target.clone());
+        false
+    }
+
+    /// Forgets the key of a previous flow, so a new flow chooses again.
+    fn begin_flow(&self) {
+        self.ivars().borrow_mut().key = None;
+    }
+
+    /// Chooses the security key, then continues with `after`. One plugged-in key is used at once.
+    /// With several, all blink and the first one touched is used.
+    fn with_key(&self, after: AfterKey) {
+        self.close_message();
+        self.spawn(Next::Devices(after), None, || {
+            Ok(Outcome::Devices(fido::devices()))
+        });
+    }
+
+    fn continue_with_key(&self, after: AfterKey) {
+        match after {
+            AfterKey::Unlock(target) => self.pin_panel(target, None),
+            AfterKey::Setup(step) => self.open_setup(step, None),
+        }
+    }
+
+    /// Opens the PIN panel. `pin_submit` derives and decrypts on a worker thread.
+    fn pin_panel(&self, target: Target, message: Option<&str>) {
+        if self.busy() {
             return;
         }
         self.close_message();
@@ -772,13 +1064,6 @@ impl Controller {
             Target::Fill => self.ivars().borrow().kpxc.database(),
             Target::Copy(database) => Some(database.clone()),
         };
-        if !vault.has_secret_for(database.as_deref()) {
-            let name = database.as_deref().unwrap_or("this database");
-            self.alert(&format!(
-                "No password is stored for {name}. Add one with Set Database Password… in the menu, or run:\nfido2kpxc set-secret --database {name}"
-            ));
-            return self.done(target);
-        }
         let message = match (message, &database) {
             (Some(message), _) => message.to_owned(),
             (None, Some(database)) => {
@@ -792,7 +1077,6 @@ impl Controller {
             "Unlock with Security Key",
             &message,
             &[Field::secret("PIN")],
-            &[],
             &[
                 Button {
                     title: "Unlock",
@@ -890,7 +1174,7 @@ impl Controller {
                 key: Key::Return,
             }]
         };
-        let form = panels::form(self.mtm(), self, "fido2kpxc", message, &[], &[], &buttons);
+        let form = panels::form(self.mtm(), self, "fido2kpxc", message, &[], &buttons);
         self.ivars().borrow_mut().message = Some(Message { form, retry });
     }
 
@@ -1000,13 +1284,16 @@ pub fn run() -> Result<()> {
         add("Set Database Password…", Some(sel!(setPassword:))),
     ];
     menu.addItem(&NSMenuItem::separatorItem(mtm));
+    add("Settings…", Some(sel!(openSettings:)));
     add("Open Config…", Some(sel!(openConfig:)));
     add("Show Vault in Finder", Some(sel!(showVault:)));
+    add("Copy Diagnostics", Some(sel!(copyDiagnostics:)));
     add("Help…", Some(sel!(showHelp:)));
     menu.addItem(&NSMenuItem::separatorItem(mtm));
     let grant = add("Grant Accessibility…", Some(sel!(grantAccessibility:)));
     let login = add("Start at Login", Some(sel!(toggleLogin:)));
     menu.addItem(&NSMenuItem::separatorItem(mtm));
+    add("About fido2kpxc", Some(sel!(showAbout:)));
     add("Quit", Some(sel!(quit:)));
 
     let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
@@ -1021,6 +1308,7 @@ pub fn run() -> Result<()> {
         manage,
         item,
         key_icon: key_icon(),
+        warning_icon: warning_icon(),
     });
     controller.refresh_menu();
 
@@ -1038,14 +1326,26 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-/// The keyhole disc from the app icon, embedded so it also shows when the app runs unbundled.
+/// The security key from the app icon, embedded so it also shows when the app runs unbundled.
 fn key_icon() -> Option<Retained<NSImage>> {
-    let pdf = NSData::with_bytes(include_bytes!("../assets/menubar.pdf"));
+    template_icon(include_bytes!("../assets/menubar.pdf"), "fido2kpxc")
+}
+
+/// The same key with an exclamation mark, for a config or vault that needs attention.
+fn warning_icon() -> Option<Retained<NSImage>> {
+    template_icon(
+        include_bytes!("../assets/menubar-warning.pdf"),
+        "fido2kpxc: needs attention",
+    )
+}
+
+fn template_icon(pdf: &[u8], description: &str) -> Option<Retained<NSImage>> {
+    let pdf = NSData::with_bytes(pdf);
     let image = NSImage::initWithData(NSImage::alloc(), &pdf)?;
     image.setSize(NSSize::new(16.0, 16.0));
     // Template images take the menu bar's color in light mode, dark mode, and when highlighted.
     image.setTemplate(true);
-    image.setAccessibilityDescription(Some(ns_string!("fido2kpxc")));
+    image.setAccessibilityDescription(Some(&NSString::from_str(description)));
     Some(image)
 }
 
@@ -1060,9 +1360,62 @@ fn load() -> Result<(Config, Vault)> {
     Ok((config, vault))
 }
 
+/// Steps whose form asks for a PIN, so their key is chosen first.
+fn needs_key(step: &Step) -> bool {
+    matches!(
+        step,
+        Step::Create
+            | Step::AddCurrent
+            | Step::AddNew { .. }
+            | Step::RemoveTouch { .. }
+            | Step::SetPassword
+    )
+}
+
+/// Labels for the autofill choice, in the order of [`Autofill::ALL`].
+const AUTOFILL_LABELS: [&str; 3] = ["Fill and unlock", "Fill only", "Off"];
+
+/// Values the settings form starts with: a rejected draft, else the current config, else defaults.
+/// Other steps get empty values they never read.
+fn settings_values(step: &Step, config: Option<&Config>) -> (String, String, usize, usize) {
+    if let Step::Settings { draft: Some(draft) } = step {
+        let autofill = AUTOFILL_LABELS
+            .iter()
+            .position(|l| *l == draft[1])
+            .unwrap_or(0);
+        return (
+            draft[0].clone(),
+            draft[3].clone(),
+            autofill,
+            usize::from(draft[2] == "On"),
+        );
+    }
+    let Some(config) = config else {
+        return (String::new(), "20".to_owned(), 0, 0);
+    };
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let folder = match home
+        .as_deref()
+        .and_then(|home| config.folder.strip_prefix(home).ok())
+    {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => config.folder.display().to_string(),
+    };
+    let autofill = Autofill::ALL
+        .iter()
+        .position(|a| *a == config.autofill)
+        .unwrap_or(0);
+    (
+        folder,
+        config.clear_seconds.to_string(),
+        autofill,
+        usize::from(config.copy_password),
+    )
+}
+
 /// A panel without buttons that stays up while the worker thread waits for a touch.
 fn touch_form(mtm: MainThreadMarker, target: &AnyObject, text: &str) -> Form {
-    panels::form(mtm, target, "fido2kpxc", text, &[], &[], &[])
+    panels::form(mtm, target, "fido2kpxc", text, &[], &[])
 }
 
 /// Why the password fields cannot be used, if they cannot.
@@ -1112,7 +1465,7 @@ fn help_text() -> String {
         .map_or_else(|_| "fido2kpxc".to_owned(), |p| p.display().to_string());
     format!(
         "Setup
-1. Choose Open Config… and set folder to your vault's folder.
+1. Choose Settings… and set the vault folder.
 2. Choose Set Up… and follow the panels, or run in Terminal: fido2kpxc enroll --label primary
 3. Choose Grant Accessibility… and allow fido2kpxc.
 
@@ -1123,6 +1476,7 @@ Add Security Key… enrolls a backup key, which may be another brand.
 Remove Security Key… removes a key, for example a lost one. Each remaining key needs a touch.
 Set Database Password… stores the password for one database file, or for any database when the name is blank.
 
+If autofill does not start, choose Copy Diagnostics and include the report in a bug report.
 The same actions exist in Terminal. Run fido2kpxc help for the list.
 If fido2kpxc is not on your PATH, use {exe}"
     )
@@ -1137,19 +1491,4 @@ fn request_accessibility() {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn password_fields_must_be_filled_and_match() {
-        assert!(password_problem("", "").is_some());
-        assert!(password_problem("a", "b").is_some());
-        assert_eq!(password_problem("a", "a"), None);
-    }
-
-    #[test]
-    fn blank_database_name_means_any_database() {
-        assert_eq!(database_or_any("  "), ANY);
-        assert_eq!(database_or_any(" work.kdbx "), "work.kdbx");
-    }
-}
+mod tests;

@@ -27,11 +27,11 @@ chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 ctap-hid-fido2 = "3.6"
 getrandom = "0.4"
 objc2 = "0.6"
-objc2-app-kit = "0.3"
-objc2-application-services = "0.3"
-objc2-core-foundation = "0.3"
-objc2-foundation = "0.3"
-objc2-service-management = "0.3"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "objc2-core-foundation", "NSApplication", "NSButton", "NSCell", "NSGraphics", "NSLayoutConstraint", "NSControl", "NSEvent", "NSImage", "NSImageView", "NSMenu", "NSMenuItem", "NSPanel", "NSPasteboard", "NSPopUpButton", "NSResponder", "NSRunningApplication", "NSSecureTextField", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSTextField", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-application-services = { version = "0.3", default-features = false, features = ["std", "libc", "HIServices", "AXError", "AXUIElement"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFBase", "CFDictionary", "CFNumber", "CFString"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSData", "NSEnumerator", "NSError", "NSGeometry", "NSObject", "NSProcessInfo", "NSString", "NSTimer", "NSURL"] }
+objc2-service-management = { version = "0.3", default-features = false, features = ["std", "objc2", "objc2-foundation", "SMAppService"] }
 rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3"

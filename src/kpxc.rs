@@ -7,46 +7,49 @@ use objc2_application_services::{AXError, AXUIElement};
 use std::ffi::c_void;
 
 use objc2_core_foundation::{CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType};
-use objc2_foundation::NSString;
+use objc2_foundation::{NSBundle, NSString};
 
 const BUNDLE_ID: &str = "org.keepassxc.keepassxc";
 // Bounds each call when KeePassXC hangs.
 const AX_TIMEOUT_SECONDS: f32 = 0.5;
 
-/// The focused element's attributes that decide whether KeePassXC asks for the database password.
+/// What decides whether KeePassXC asks for the database password.
 pub struct Focus<'a> {
     pub frontmost: bool,
+    /// The focused element's role.
     pub role: &'a str,
-    pub description: &'a str,
-    pub window_title: &'a str,
+    /// Every static text in the focused window.
+    pub window_texts: &'a [String],
 }
 
 pub fn is_password_prompt(focus: &Focus) -> bool {
+    // Only the unlock screen, in the main window or the unlock dialog, shows the database's
+    // absolute path as text. A path reads the same in every UI language, unlike labels and titles.
     focus.frontmost
         && focus.role == "AXTextField"
-        // 2.7.12 ships "visibilty". Upstream main fixed the spelling.
-        && focus.description.starts_with("Toggle password visib")
-        // The entry editor reuses this field, but a locked database has no open editor.
-        && (focus.window_title.contains("[Locked]") || focus.window_title.starts_with("Unlock Database"))
+        && database_from_texts(focus.window_texts.iter().map(String::as_str)).is_some()
 }
 
-/// The database file name in a locked main window's title, such as `pdb.kdbx [Locked] - KeePassXC`.
-/// The separate unlock dialog's title names no database.
-pub fn database_name(window_title: &str) -> Option<&str> {
-    window_title
-        .split_once(" [Locked]")
-        .map(|(name, _)| name)
-        .filter(|name| !name.is_empty())
-}
-
-/// The database file name from the unlock widget's path label, which both the locked main
-/// window and the separate unlock dialog show. It is the only text that is an absolute path.
+/// The file name of the first text that is the path of a KeePass database, which is what the
+/// unlock widget's path label shows in both the locked main window and the unlock dialog.
 pub fn database_from_texts<'a>(texts: impl IntoIterator<Item = &'a str>) -> Option<String> {
     texts
         .into_iter()
-        .find(|text| text.starts_with('/'))
+        .find(|text| is_database_file(text))
         .and_then(|path| std::path::Path::new(path).file_name())
         .map(|name| name.to_string_lossy().into_owned())
+}
+
+/// True for an absolute path to a file that starts with the KDBX signature. Any other text, such
+/// as an entry titled with a path, does not count.
+fn is_database_file(text: &str) -> bool {
+    use std::io::Read;
+    const KDBX: [u8; 4] = [0x03, 0xD9, 0xA2, 0x9A];
+    let mut signature = [0; 4];
+    text.starts_with('/')
+        && std::fs::File::open(text)
+            .and_then(|mut file| file.read_exact(&mut signature))
+            .is_ok_and(|()| signature == KDBX)
 }
 
 /// Polls KeePassXC's focused element and reports each new password prompt once.
@@ -54,21 +57,28 @@ pub fn database_from_texts<'a>(texts: impl IntoIterator<Item = &'a str>) -> Opti
 pub struct Kpxc {
     prompting: bool,
     prompt: Option<Prompt>,
+    seen: Option<Seen>,
+}
+
+/// The verdict for one focus. Reading a window's texts walks its elements, so it is redone only
+/// when the process, window title, or focused field changes, as happens on lock, unlock, or a dialog.
+struct Seen {
+    key: (i32, String, String),
+    prompt: bool,
+    database: Option<String>,
 }
 
 struct Prompt {
     pid: i32,
     field: CFRetained<AXUIElement>,
     window: CFRetained<AXUIElement>,
-    window_title: String,
-    /// Read once per prompt, because it walks the window's elements.
     database: Option<String>,
 }
 
 impl Kpxc {
     /// Returns true when a password prompt gains focus. Queries KeePassXC only while it is frontmost.
     pub fn poll(&mut self) -> bool {
-        let prompt = frontmost_pid().and_then(focused_prompt);
+        let prompt = frontmost_pid().and_then(|pid| self.focused_prompt(pid));
         let started = prompt.is_some() && !self.prompting;
         self.prompting = prompt.is_some();
         match prompt {
@@ -77,20 +87,46 @@ impl Kpxc {
                 self.prompt = None;
                 false
             }
-            Some(mut prompt) => {
-                if started {
-                    prompt.database = database_from_texts(
-                        static_texts(&prompt.window).iter().map(String::as_str),
-                    )
-                    .or_else(|| database_name(&prompt.window_title).map(str::to_owned));
-                } else if let Some(previous) = self.prompt.take() {
-                    prompt.database = previous.database;
-                }
+            Some(prompt) => {
                 self.prompt = Some(prompt);
                 started
             }
             None => started,
         }
+    }
+
+    fn focused_prompt(&mut self, pid: i32) -> Option<Prompt> {
+        let (field, window) = focused(pid)?;
+        let key = (
+            pid,
+            string(&window, "AXTitle"),
+            string(&field, "AXDescription"),
+        );
+        if self.seen.as_ref().is_none_or(|seen| seen.key != key) {
+            let role = string(&field, "AXRole");
+            let texts = if role == "AXTextField" {
+                static_texts(&window)
+            } else {
+                Vec::new()
+            };
+            let focus = Focus {
+                frontmost: true,
+                role: &role,
+                window_texts: &texts,
+            };
+            self.seen = Some(Seen {
+                key,
+                prompt: is_password_prompt(&focus),
+                database: database_from_texts(texts.iter().map(String::as_str)),
+            });
+        }
+        let seen = self.seen.as_ref()?;
+        seen.prompt.then(|| Prompt {
+            pid,
+            field,
+            window,
+            database: seen.database.clone(),
+        })
     }
 
     /// Writes `secret` into the last prompt's field, then optionally presses Unlock.
@@ -183,6 +219,61 @@ unsafe fn owned(value: *mut CFType) -> Option<CFRetained<CFType>> {
     NonNull::new(value).map(|v| unsafe { CFRetained::from_raw(v) })
 }
 
+/// What detection sees right now, for "Copy Diagnostics". Holds no secrets.
+pub fn diagnose() -> Vec<String> {
+    let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(
+        BUNDLE_ID,
+    ));
+    let Some(app) = apps.iter().next() else {
+        return vec!["KeePassXC: not running".to_owned()];
+    };
+    let pid = app.processIdentifier();
+    let version = app
+        .bundleURL()
+        .and_then(|url| NSBundle::bundleWithURL(&url))
+        .and_then(|bundle| {
+            bundle.objectForInfoDictionaryKey(&NSString::from_str("CFBundleShortVersionString"))
+        })
+        .and_then(|value| value.downcast::<NSString>().ok())
+        .map_or_else(|| "unknown".to_owned(), |v| v.to_string());
+    let mut lines = vec![
+        format!("KeePassXC: running, version {version}, pid {pid}"),
+        format!(
+            "KeePassXC signature check: {}",
+            if is_genuine_keepassxc(pid) {
+                "passed"
+            } else {
+                "FAILED"
+            }
+        ),
+        format!("KeePassXC frontmost: {}", frontmost_pid() == Some(pid)),
+    ];
+    match focused(pid) {
+        None => lines.push("Focused window: none".to_owned()),
+        Some((field, window)) => {
+            let role = string(&field, "AXRole");
+            let texts = static_texts(&window);
+            let database = database_from_texts(texts.iter().map(String::as_str));
+            lines.push(format!("Focused window: {:?}", string(&window, "AXTitle")));
+            lines.push(format!("Focused element role: {role}"));
+            lines.push(format!(
+                "Database path label: {}",
+                database.as_deref().unwrap_or("not found")
+            ));
+            let focus = Focus {
+                frontmost: true,
+                role: &role,
+                window_texts: &texts,
+            };
+            lines.push(format!(
+                "Password prompt when frontmost: {}",
+                is_password_prompt(&focus)
+            ));
+        }
+    }
+    lines
+}
+
 pub fn accessibility_trusted() -> bool {
     unsafe { objc2_application_services::AXIsProcessTrusted() }
 }
@@ -192,7 +283,8 @@ fn frontmost_pid() -> Option<i32> {
     (app.bundleIdentifier()?.to_string() == BUNDLE_ID).then(|| app.processIdentifier())
 }
 
-fn focused_prompt(pid: i32) -> Option<Prompt> {
+/// KeePassXC's focused element and focused window.
+fn focused(pid: i32) -> Option<(CFRetained<AXUIElement>, CFRetained<AXUIElement>)> {
     // On the system-wide element the timeout applies to every AX call, not just this one.
     static TIMEOUT: Once = Once::new();
     TIMEOUT.call_once(|| unsafe {
@@ -202,25 +294,18 @@ fn focused_prompt(pid: i32) -> Option<Prompt> {
     let field = element(&app, "AXFocusedUIElement")?;
     // Qt gives the focused field no AXWindow attribute, so ask the app for its focused window.
     let window = element(&app, "AXFocusedWindow")?;
-    let window_title = string(&window, "AXTitle");
-    let focus = Focus {
-        frontmost: true,
-        role: &string(&field, "AXRole"),
-        description: &string(&field, "AXDescription"),
-        window_title: &window_title,
-    };
-    is_password_prompt(&focus).then_some(Prompt {
-        pid,
-        field,
-        window,
-        window_title,
-        database: None,
-    })
+    Some((field, window))
 }
 
-/// Values of every static text in `parent`, depth first.
+/// Values of the static texts in `parent`, depth first. An unlocked database window can hold
+/// thousands of rows, so the walk stops after `LIMIT` elements. The unlock screen is far smaller.
 fn static_texts(parent: &AXUIElement) -> Vec<String> {
-    fn walk(element: &AXUIElement, depth: usize, out: &mut Vec<String>) {
+    const LIMIT: usize = 400;
+    fn walk(element: &AXUIElement, depth: usize, visited: &mut usize, out: &mut Vec<String>) {
+        *visited += 1;
+        if *visited > LIMIT || depth > 25 {
+            return;
+        }
         if string(element, "AXRole") == "AXStaticText" {
             out.push(string(element, "AXValue"));
         }
@@ -231,14 +316,12 @@ fn static_texts(parent: &AXUIElement) -> Vec<String> {
         };
         // SAFETY: AXChildren is documented to hold AXUIElement values.
         let children = unsafe { children.cast_unchecked::<AXUIElement>() };
-        if depth < 25 {
-            for child in children.iter() {
-                walk(&child, depth + 1, out);
-            }
+        for child in children.iter() {
+            walk(&child, depth + 1, visited, out);
         }
     }
     let mut out = Vec::new();
-    walk(parent, 0, &mut out);
+    walk(parent, 0, &mut 0, &mut out);
     out
 }
 
@@ -287,90 +370,4 @@ fn cf(text: &str) -> CFRetained<CFString> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const RELEASED: &str = "Toggle password visibilty using Control + H. Open the password generator using Control + G.";
-    const UPSTREAM: &str = "Toggle password visibility using Control + H. Open the password generator using Control + G.";
-
-    fn focus<'a>(frontmost: bool, description: &'a str, window_title: &'a str) -> Focus<'a> {
-        Focus {
-            frontmost,
-            role: "AXTextField",
-            description,
-            window_title,
-        }
-    }
-
-    #[test]
-    fn a_process_not_signed_by_keepassxc_fails_the_check() {
-        assert!(!is_genuine_keepassxc(std::process::id() as i32));
-    }
-
-    #[test]
-    fn running_keepassxc_passes_the_check() {
-        let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(
-            &NSString::from_str(BUNDLE_ID),
-        );
-        // Skips when KeePassXC is not running on the test machine.
-        if let Some(app) = apps.iter().next() {
-            assert!(is_genuine_keepassxc(app.processIdentifier()));
-        }
-    }
-
-    #[test]
-    fn database_file_comes_from_the_path_label() {
-        let texts = [
-            "Unlock KeePassXC Database",
-            "/Users/me/Synced/work.kdbx",
-            "Enter Password:",
-        ];
-        assert_eq!(database_from_texts(texts).as_deref(), Some("work.kdbx"));
-        assert_eq!(database_from_texts(["Enter Password:"]), None);
-    }
-
-    #[test]
-    fn database_name_comes_from_the_locked_window_title() {
-        assert_eq!(
-            database_name("pdb.kdbx [Locked] - KeePassXC"),
-            Some("pdb.kdbx")
-        );
-        assert_eq!(database_name("Unlock Database - KeePassXC"), None);
-    }
-
-    #[test]
-    fn locked_main_window_is_a_prompt() {
-        assert!(is_password_prompt(&focus(
-            true,
-            RELEASED,
-            "pdb.kdbx [Locked] - KeePassXC"
-        )));
-    }
-
-    #[test]
-    fn unlock_dialog_is_a_prompt_with_the_upstream_spelling() {
-        assert!(is_password_prompt(&focus(
-            true,
-            UPSTREAM,
-            "Unlock Database - KeePassXC"
-        )));
-    }
-
-    #[test]
-    fn entry_editor_password_field_is_not_a_prompt() {
-        assert!(!is_password_prompt(&focus(
-            true,
-            RELEASED,
-            "pdb.kdbx - KeePassXC"
-        )));
-    }
-
-    #[test]
-    fn background_keepassxc_is_not_a_prompt() {
-        assert!(!is_password_prompt(&focus(
-            false,
-            RELEASED,
-            "pdb.kdbx [Locked] - KeePassXC"
-        )));
-    }
-}
+mod tests;

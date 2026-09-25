@@ -1,0 +1,9 @@
+# Shared by the codeql workflow and `cargo xtask codeql`, so both report the same findings.
+# The query suite (security-extended) is named in the workflow and in xtask, because the local CLI
+# cannot resolve the config's shorthand for it.
+name: fido2kpxc
+# Tests live in tests.rs files and use fixed salts and sample passwords on purpose.
+# CodeQL's Rust analysis does not recognize #[cfg(test)], so it would report them as secrets.
+paths-ignore:
+  - src/**/tests.rs
+  - target
