@@ -22,7 +22,7 @@ use zeroize::Zeroizing;
 
 use crate::config::{Autofill, Config};
 use crate::fido::{self, FidoError};
-use crate::kpxc::{self, Kpxc};
+use crate::kpxc::{self, Kpxc, Verdict};
 use crate::ops;
 use crate::panels::{self, Button, Field, Form, Key};
 use crate::vault::{ANY, Unlock, Vault};
@@ -47,10 +47,12 @@ struct Asking {
     form: Form,
 }
 
-/// An open message panel. `retry` holds the attempt that Retry would restart.
+/// An open message panel. `retry` holds the attempt that Retry would restart, and `update` the
+/// database whose stored password "Update Password…" replaces.
 struct Message {
     form: Form,
     retry: Option<Target>,
+    update: Option<String>,
 }
 
 struct Pending {
@@ -78,7 +80,11 @@ enum Step {
         left: Vec<(String, Vec<u8>)>,
         collected: Vec<Unlock>,
     },
-    SetPassword,
+    /// `database` prefills the file name, for a password KeePassXC rejected.
+    SetPassword {
+        database: String,
+    },
+    CheckKey,
     /// `draft` holds the values of a rejected attempt, so the form reopens with them.
     Settings {
         draft: Option<Vec<String>>,
@@ -104,6 +110,14 @@ enum Next {
     /// The user touched the key to use.
     Chosen(AfterKey),
     Report(String),
+    /// Stored the password for `database`. If KeePassXC waits for that database, unlocking
+    /// starts again with the new password.
+    Stored {
+        report: String,
+        database: String,
+    },
+    /// Shows the report that the operation returns.
+    Show,
     AskNewKey,
     Collect {
         label: String,
@@ -114,6 +128,7 @@ enum Next {
 
 enum Outcome {
     Done,
+    Report(String),
     Unlock(Unlock),
     Devices(Vec<fido::Device>),
     Key(fido::Key),
@@ -170,6 +185,8 @@ struct State {
     menu: Option<Menu>,
     /// The last config and vault check. An error keeps the app idle until the files are fixed.
     health: Option<(Instant, Result<Config, String>)>,
+    /// Sync-conflict copies of the vault, found at the last health check. Unlocking still works.
+    conflicts: Vec<String>,
 }
 
 define_class!(
@@ -276,6 +293,17 @@ define_class!(
             }
         }
 
+        #[unsafe(method(updatePassword:))]
+        fn update_password(&self, _sender: &AnyObject) {
+            let Some(message) = self.ivars().borrow_mut().message.take() else {
+                return;
+            };
+            message.form.close();
+            let database = message.update.unwrap_or_default();
+            self.begin_flow();
+            self.open_setup(Step::SetPassword { database }, None);
+        }
+
         #[unsafe(method(pinCancel:))]
         fn pin_cancel(&self, _sender: &AnyObject) {
             let Some(asking) = self.ivars().borrow_mut().asking.take() else {
@@ -304,10 +332,21 @@ define_class!(
             self.open_setup(Step::RemoveChoose, None);
         }
 
+        #[unsafe(method(checkKey:))]
+        fn check_key(&self, _sender: &AnyObject) {
+            self.begin_flow();
+            self.open_setup(Step::CheckKey, None);
+        }
+
         #[unsafe(method(setPassword:))]
         fn set_password(&self, _sender: &AnyObject) {
             self.begin_flow();
-            self.open_setup(Step::SetPassword, None);
+            self.open_setup(
+                Step::SetPassword {
+                    database: String::new(),
+                },
+                None,
+            );
         }
 
         #[unsafe(method(setupSubmit:))]
@@ -390,7 +429,11 @@ define_class!(
                 Button { title: "Source Code", action: sel!(openRepository:), key: Key::Escape },
             ];
             let form = panels::form(self.mtm(), self, "About fido2kpxc", &text, &[], &buttons);
-            self.ivars().borrow_mut().message = Some(Message { form, retry: None });
+            self.ivars().borrow_mut().message = Some(Message {
+                form,
+                retry: None,
+                update: None,
+            });
         }
 
         #[unsafe(method(openRepository:))]
@@ -453,6 +496,11 @@ impl Controller {
 
         self.clear_clipboard(false);
 
+        let result = self.ivars().borrow_mut().kpxc.unlock_result();
+        if let Some((database, Verdict::Rejected(said))) = result {
+            self.show_rejected(&database, said.as_deref());
+        }
+
         let Some(config) = self.check_health(false) else {
             return;
         };
@@ -498,7 +546,11 @@ impl Controller {
             let health = load()
                 .map(|(config, _)| config)
                 .map_err(|e| format!("{e:#}"));
-            self.ivars().borrow_mut().health = Some((Instant::now(), health));
+            let conflicts = health.as_ref().map(Config::conflicts).unwrap_or_default();
+            let mut state = self.ivars().borrow_mut();
+            state.health = Some((Instant::now(), health));
+            state.conflicts = conflicts;
+            drop(state);
             self.update_icon();
         }
         let state = self.ivars().borrow();
@@ -514,12 +566,12 @@ impl Controller {
             return;
         };
         let (icon, fallback, description) = match health {
-            Ok(_) => (
+            Ok(_) if state.conflicts.is_empty() => (
                 &menu.key_icon,
                 ns_string!("key.fill"),
                 ns_string!("fido2kpxc"),
             ),
-            Err(_) => (
+            _ => (
                 &menu.warning_icon,
                 ns_string!("exclamationmark.triangle.fill"),
                 ns_string!("fido2kpxc: needs attention"),
@@ -566,6 +618,15 @@ impl Controller {
                         ));
                     }
                 }
+                let conflicts = config.conflicts();
+                lines.push(format!(
+                    "Sync conflicts: {}",
+                    if conflicts.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        conflicts.join(", ")
+                    }
+                ));
             }
         }
         lines.push(format!(
@@ -692,7 +753,8 @@ impl Controller {
                 vec![pin],
                 "Continue",
             ),
-            Step::SetPassword => {
+            Step::SetPassword { database: name } => {
+                let database = Field::plain("Database file", name);
                 let stored = vault
                     .as_ref()
                     .map(|v| v.databases().into_iter().map(ops::describe).collect::<Vec<_>>().join(", "))
@@ -702,6 +764,11 @@ impl Controller {
                 );
                 (text, vec![database, password, repeat, pin], "Save")
             }
+            Step::CheckKey => (
+                "Enter this security key's PIN, then touch it. fido2kpxc shows which enrolled key it is and whether it opens every stored password. It fills nothing.".to_owned(),
+                vec![pin],
+                "Check",
+            ),
             Step::Settings { .. } => {
                 let path = Config::path().map_or_else(|_| "the config file".to_owned(), |p| p.display().to_string());
                 let text = format!(
@@ -876,17 +943,31 @@ impl Controller {
                 );
             }
             Step::Settings { .. } => {}
-            Step::SetPassword => {
+            Step::CheckKey => {
+                let pin = owned(0);
+                if pin.is_empty() {
+                    return self.open_setup(Step::CheckKey, Some("Enter the PIN."));
+                }
+                self.spawn(Next::Show, Some("Touch your security key."), move || {
+                    ops::check_key(&config, &key.context("No security key was chosen")?, &pin)
+                        .map(Outcome::Report)
+                });
+            }
+            Step::SetPassword { .. } => {
                 let (database, pin) = (database_or_any(&values[0]), owned(3));
                 let secret = Zeroizing::new(values[1].to_string());
                 let problem = password_problem(&values[1], &values[2])
                     .or_else(|| pin.is_empty().then_some("Enter the PIN."));
                 if let Some(problem) = problem {
-                    return self.open_setup(Step::SetPassword, Some(problem));
+                    let database = values[0].trim().to_owned();
+                    return self.open_setup(Step::SetPassword { database }, Some(problem));
                 }
                 let report = format!("Stored the password for {}.", ops::describe(&database));
                 self.spawn(
-                    Next::Report(report),
+                    Next::Stored {
+                        report,
+                        database: database.clone(),
+                    },
                     Some("Touch your security key."),
                     move || {
                         ops::set_secret(
@@ -952,6 +1033,17 @@ impl Controller {
             (Next::Chosen(after), Ok(Outcome::Key(key))) => {
                 self.ivars().borrow_mut().key = Some(key);
                 self.continue_with_key(after);
+            }
+            (Next::Show, Ok(Outcome::Report(report))) => self.alert(&report),
+            (Next::Stored { report, database }, Ok(_)) => {
+                self.check_health(true);
+                let mut state = self.ivars().borrow_mut();
+                let waiting = state.kpxc.database();
+                if waiting.as_deref() == Some(database.as_str()) {
+                    state.kpxc.rearm();
+                }
+                drop(state);
+                self.alert(&report);
             }
             (Next::Report(report), Ok(_)) => {
                 self.check_health(true);
@@ -1127,7 +1219,7 @@ impl Controller {
                 let press = self
                     .check_health(false)
                     .is_some_and(|c| c.autofill == Autofill::FillAndUnlock);
-                let filled = self.ivars().borrow().kpxc.fill(text, press);
+                let filled = self.ivars().borrow_mut().kpxc.fill(text, press);
                 if let Err(error) = filled {
                     self.alert(&format!(
                         "Autofill failed: {error:#}. Type the password in KeePassXC, or set copy_password = true for a Copy Password fallback."
@@ -1175,7 +1267,42 @@ impl Controller {
             }]
         };
         let form = panels::form(self.mtm(), self, "fido2kpxc", message, &[], &buttons);
-        self.ivars().borrow_mut().message = Some(Message { form, retry });
+        self.ivars().borrow_mut().message = Some(Message {
+            form,
+            retry,
+            update: None,
+        });
+    }
+
+    /// Tells the user KeePassXC refused the stored password, most likely after a password change,
+    /// and offers to store the new one.
+    fn show_rejected(&self, database: &str, said: Option<&str>) {
+        if self.busy() {
+            return;
+        }
+        let said = said.map_or_else(String::new, |said| format!(" KeePassXC says: \"{said}\""));
+        let text = format!(
+            "KeePassXC did not unlock {database} with the stored password.{said}\n\nIf you changed the database password, store the new one."
+        );
+        self.close_message();
+        let buttons = [
+            Button {
+                title: "Update…",
+                action: sel!(updatePassword:),
+                key: Key::Return,
+            },
+            Button {
+                title: "Cancel",
+                action: sel!(messageDismiss:),
+                key: Key::Escape,
+            },
+        ];
+        let form = panels::form(self.mtm(), self, "fido2kpxc", &text, &[], &buttons);
+        self.ivars().borrow_mut().message = Some(Message {
+            form,
+            retry: None,
+            update: Some(database.to_owned()),
+        });
     }
 
     /// Closes the message panel and returns the attempt it could have retried.
@@ -1222,12 +1349,15 @@ impl Controller {
         let Some(menu) = state.menu.as_ref() else {
             return;
         };
-        let status = match state.health.as_ref() {
-            Some((_, Err(error))) => error.clone(),
+        let status = match (state.health.as_ref(), state.conflicts.as_slice()) {
+            (Some((_, Err(error))), _) => error.clone(),
+            (_, [first, ..]) => format!("Sync conflict: {first}. See Help…"),
             _ => "Ready".to_owned(),
         };
-        menu.status
-            .setTitle(&NSString::from_str(&format!("fido2kpxc - {status}")));
+        menu.status.setTitle(&NSString::from_str(&format!(
+            "fido2kpxc {} - {status}",
+            env!("CARGO_PKG_VERSION")
+        )));
         let copy = config.as_ref().is_some_and(|c| c.copy_password);
         menu.copy.setHidden(!copy);
         if copy {
@@ -1281,6 +1411,7 @@ pub fn run() -> Result<()> {
     let manage = vec![
         add("Add Security Key…", Some(sel!(addKey:))),
         add("Remove Security Key…", Some(sel!(removeKey:))),
+        add("Check a Security Key…", Some(sel!(checkKey:))),
         add("Set Database Password…", Some(sel!(setPassword:))),
     ];
     menu.addItem(&NSMenuItem::separatorItem(mtm));
@@ -1368,7 +1499,8 @@ fn needs_key(step: &Step) -> bool {
             | Step::AddCurrent
             | Step::AddNew { .. }
             | Step::RemoveTouch { .. }
-            | Step::SetPassword
+            | Step::SetPassword { .. }
+            | Step::CheckKey
     )
 }
 
@@ -1474,7 +1606,10 @@ Then locking KeePassXC opens the PIN panel. The first line of this menu shows an
 Menu items
 Add Security Key… enrolls a backup key, which may be another brand.
 Remove Security Key… removes a key, for example a lost one. Each remaining key needs a touch.
+Check a Security Key… shows which enrolled key is plugged in and whether it opens every stored password. Test backup keys this way now and then.
 Set Database Password… stores the password for one database file, or for any database when the name is blank.
+
+A sync conflict means your sync tool left a second copy of the vault, such as vault 2.toml, after two Macs changed it at once. Keep the copy with all your keys and passwords as vault.toml, delete the other, and add anything missing again.
 
 If autofill does not start, choose Copy Diagnostics and include the report in a bug report.
 The same actions exist in Terminal. Run fido2kpxc help for the list.

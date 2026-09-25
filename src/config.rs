@@ -138,6 +138,23 @@ impl Config {
         Ok(())
     }
 
+    /// Copies of the vault that a sync tool left after two Macs wrote it at once, such as
+    /// Syncthing's `vault.sync-conflict-….toml`, Dropbox's `vault (… conflicted copy …).toml`,
+    /// or iCloud's `vault 2.toml`. A key enrolled on one Mac may exist only in the copy.
+    pub fn conflicts(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(&self.folder) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| {
+                name != "vault.toml" && name.starts_with("vault") && name.ends_with(".toml")
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
     fn parse(text: &str, home: &Path) -> Result<Self> {
         let mut config: Self = toml::from_str(text)?;
         // Each Mac keeps the folder under a different home, so allow `~/`.

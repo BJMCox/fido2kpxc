@@ -55,3 +55,35 @@ fn tilde_expands_to_home() {
     assert_eq!(config.vault, Path::new("/Users/me/Synced/vault.toml"));
     assert_eq!(config.autofill, Autofill::Fill);
 }
+
+#[test]
+fn conflicts_lists_sync_copies_of_the_vault_only() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in [
+        "vault.toml",
+        "vault.sync-conflict-20260925-120000-ABCDEFG.toml",
+        "vault (Jessica's conflicted copy 2026-09-25).toml",
+        "vault 2.toml",
+        ".fido2kpxc-abc.tmp",
+        "notes.toml",
+        "vault.toml.bak",
+    ] {
+        std::fs::write(dir.path().join(name), "").unwrap();
+    }
+    let text = format!("folder = {:?}", dir.path());
+    let config = Config::parse(&text, Path::new("/h")).unwrap();
+    assert_eq!(
+        config.conflicts(),
+        [
+            "vault (Jessica's conflicted copy 2026-09-25).toml",
+            "vault 2.toml",
+            "vault.sync-conflict-20260925-120000-ABCDEFG.toml",
+        ]
+    );
+}
+
+#[test]
+fn conflicts_is_empty_for_a_missing_folder() {
+    let config = Config::parse(r#"folder = "/nonexistent/fido2kpxc""#, Path::new("/h")).unwrap();
+    assert!(config.conflicts().is_empty());
+}

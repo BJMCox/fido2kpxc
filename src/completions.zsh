@@ -6,6 +6,7 @@ _fido2kpxc() {
     'enroll:create the vault with the first security key'
     'enroll-key:add a backup security key'
     'remove-key:remove a key and move the vault to a new data key'
+    'check-key:show which enrolled key is plugged in and test it'
     'set-secret:store the password for a database'
     'remove-secret:remove the stored password for a database'
     'list-keys:list the labels of the enrolled keys'

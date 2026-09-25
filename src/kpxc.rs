@@ -1,17 +1,22 @@
 use std::ptr::{self, NonNull};
 use std::sync::Once;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
 use objc2_application_services::{AXError, AXUIElement};
 use std::ffi::c_void;
 
-use objc2_core_foundation::{CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType};
+use objc2_core_foundation::{
+    CFArray, CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType,
+};
 use objc2_foundation::{NSBundle, NSString};
 
 const BUNDLE_ID: &str = "org.keepassxc.keepassxc";
 // Bounds each call when KeePassXC hangs.
 const AX_TIMEOUT_SECONDS: f32 = 0.5;
+// Covers a slow key derivation. A watch that runs out ends without a verdict.
+const WATCH: Duration = Duration::from_secs(120);
 
 /// What decides whether KeePassXC asks for the database password.
 pub struct Focus<'a> {
@@ -52,12 +57,64 @@ fn is_database_file(text: &str) -> bool {
             .is_ok_and(|()| signature == KDBX)
 }
 
+#[derive(Debug, PartialEq)]
+pub enum Verdict {
+    Unlocked,
+    /// The unlock screen still shows, with KeePassXC's new message if one appeared.
+    Rejected(Option<String>),
+}
+
+/// Judges an unlock attempt from the window texts before the press and now, or returns `None`
+/// while it runs. KeePassXC closes the unlock screen on success. On failure it keeps the screen
+/// and shows its error, so a text that was not there before is that error, in the UI language.
+/// KeePassXC stays responsive during a long key derivation with the password field disabled, so
+/// the screen counts as a failure only with the field `enabled`, and an unchanged screen only
+/// once the attempt is known to have `finished`.
+pub fn judge(
+    database: &str,
+    before: &[String],
+    now: &[String],
+    enabled: bool,
+    finished: bool,
+) -> Option<Verdict> {
+    if database_from_texts(now.iter().map(String::as_str)).as_deref() != Some(database) {
+        return Some(Verdict::Unlocked);
+    }
+    if !enabled {
+        return None;
+    }
+    let message = now
+        .iter()
+        .filter(|text| !text.trim().is_empty() && !before.contains(text))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !message.is_empty() {
+        return Some(Verdict::Rejected(Some(message)));
+    }
+    finished.then_some(Verdict::Rejected(None))
+}
+
 /// Polls KeePassXC's focused element and reports each new password prompt once.
 #[derive(Default)]
 pub struct Kpxc {
     prompting: bool,
     prompt: Option<Prompt>,
     seen: Option<Seen>,
+    watch: Option<Watch>,
+}
+
+/// An Unlock press whose result is not known yet.
+struct Watch {
+    pid: i32,
+    database: String,
+    /// The password field. KeePassXC disables it while it unlocks and enables it after a failure.
+    field: CFRetained<AXUIElement>,
+    before: Vec<String>,
+    /// The attempt ended: the field was disabled and is enabled again.
+    finished: bool,
+    busy: bool,
+    until: Instant,
 }
 
 /// The verdict for one focus. Reading a window's texts walks its elements, so it is redone only
@@ -129,10 +186,14 @@ impl Kpxc {
         })
     }
 
-    /// Writes `secret` into the last prompt's field, then optionally presses Unlock.
-    pub fn fill(&self, secret: &str, press_unlock: bool) -> Result<()> {
+    /// Writes `secret` into the last prompt's field, then optionally presses Unlock and watches
+    /// for the result, which `unlock_result` reports.
+    pub fn fill(&mut self, secret: &str, press_unlock: bool) -> Result<()> {
         let Prompt {
-            pid, field, window, ..
+            pid,
+            field,
+            window,
+            database,
         } = self
             .prompt
             .as_ref()
@@ -149,14 +210,54 @@ impl Kpxc {
         if press_unlock {
             let button =
                 find_button(window, "Unlock", 0).context("The Unlock button is missing")?;
+            let watch = database.clone().map(|database| Watch {
+                pid: *pid,
+                database,
+                field: field.clone(),
+                before: static_texts(window),
+                finished: false,
+                busy: false,
+                until: Instant::now() + WATCH,
+            });
             let status = unsafe { button.perform_action(&cf("AXPress")) };
-            // KeePassXC runs the key derivation before it answers, so a timeout means the press arrived.
+            // Qt queues the click, so Success means only that the press arrived. So does a timeout.
             ensure!(
                 matches!(status, AXError::Success | AXError::CannotComplete),
                 "Pressing Unlock failed ({status:?})"
             );
+            self.watch = watch;
         }
         Ok(())
+    }
+
+    /// The result of the watched Unlock press, once it is known.
+    pub fn unlock_result(&mut self) -> Option<(String, Verdict)> {
+        let watch = self.watch.as_mut()?;
+        if Instant::now() >= watch.until {
+            self.watch = None;
+            return None;
+        }
+        let (_, window) = focused(watch.pid)?;
+        let now = static_texts(&window);
+        // Focus leaves the password field while KeePassXC disables it, so read the field itself.
+        let enabled = enabled(&watch.field);
+        watch.busy |= !enabled;
+        watch.finished |= watch.busy && enabled;
+        let verdict = judge(
+            &watch.database,
+            &watch.before,
+            &now,
+            enabled,
+            watch.finished,
+        )?;
+        let watch = self.watch.take()?;
+        Some((watch.database, verdict))
+    }
+
+    /// Reports a prompt that is still on screen as new at the next poll, as after a stored password
+    /// replaced one that KeePassXC refused.
+    pub fn rearm(&mut self) {
+        self.prompting = false;
     }
 
     /// The database the last prompt asks for, when its window title names one.
@@ -363,6 +464,14 @@ fn string(element: &AXUIElement, name: &str) -> String {
         .and_then(|v| v.downcast::<CFString>().ok())
         .map(|s| s.to_string())
         .unwrap_or_default()
+}
+
+/// False only when the element reports itself disabled. An element without the attribute counts
+/// as enabled, so an unlocked window with an unusual focus still ends the watch.
+fn enabled(element: &AXUIElement) -> bool {
+    attribute(element, "AXEnabled")
+        .and_then(|v| v.downcast::<CFBoolean>().ok())
+        .is_none_or(|b| b.as_bool())
 }
 
 fn cf(text: &str) -> CFRetained<CFString> {

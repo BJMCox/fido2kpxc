@@ -19,6 +19,13 @@ pub struct Unlock {
     pub output: Zeroizing<[u8; 32]>,
 }
 
+/// The result of checking a key: its label, and the databases whose password it opens or not.
+pub struct Check {
+    pub label: String,
+    pub opened: Vec<String>,
+    pub failed: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Vault {
@@ -144,6 +151,29 @@ impl Vault {
         );
         let key = self.unwrap(current)?;
         self.wrap(&key, label, new)
+    }
+
+    /// Which enrolled key `unlock` belongs to, and which stored passwords it decrypts.
+    pub fn check(&self, unlock: &Unlock) -> Result<Check> {
+        let label = self
+            .keys
+            .iter()
+            .find(|k| k.cred_id == unlock.cred_id)
+            .context("This security key is not enrolled in the vault")?
+            .label
+            .clone();
+        let (mut opened, mut failed) = (Vec::new(), Vec::new());
+        for database in self.databases() {
+            match self.open(unlock, Some(database)) {
+                Ok(_) => opened.push(database.to_owned()),
+                Err(_) => failed.push(database.to_owned()),
+            }
+        }
+        Ok(Check {
+            label,
+            opened,
+            failed,
+        })
     }
 
     /// Labels and credential IDs of the enrolled keys, in vault order.

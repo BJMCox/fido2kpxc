@@ -34,7 +34,7 @@ impl fmt::Display for FidoError {
             Self::WrongPin { retries: None } => write!(f, "Wrong PIN."),
             Self::PinBlocked => write!(
                 f,
-                "The FIDO2 PIN is blocked. Only a FIDO2 reset with the vendor's tool recovers the key, such as `ykman fido reset` for a YubiKey, and it erases all FIDO2 credentials. Use a backup key."
+                "The FIDO2 PIN is blocked. Only a FIDO2 reset with the vendor's tool recovers the key, and it erases all FIDO2 credentials. Use a backup key."
             ),
             Self::PinAuthBlocked => {
                 write!(

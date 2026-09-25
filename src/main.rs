@@ -14,7 +14,7 @@ use zeroize::Zeroizing;
 use config::Config;
 use vault::{ANY, Vault};
 
-const USAGE: &str = "usage: fido2kpxc [enroll --label NAME [--database FILE] | enroll-key --label NAME | remove-key --label NAME | set-secret [--database FILE] | remove-secret --database FILE | list-keys | list-databases | completions zsh | help]";
+const USAGE: &str = "usage: fido2kpxc [enroll --label NAME [--database FILE] | enroll-key --label NAME | remove-key --label NAME | check-key | set-secret [--database FILE] | remove-secret --database FILE | list-keys | list-databases | completions zsh | help]";
 const HELP: &str = "fido2kpxc: unlock KeePassXC with a FIDO2 security key
 
 Run without arguments to start the menu-bar app.
@@ -23,6 +23,7 @@ Commands:
   enroll --label NAME [--database FILE]  Create the vault with the first security key
   enroll-key --label NAME                Add a backup security key
   remove-key --label NAME                Remove a key and move the vault to a new data key
+  check-key                              Show which enrolled key is plugged in and test it
   set-secret [--database FILE]           Store the password for a database file, such as pdb.kdbx
   remove-secret --database FILE          Remove the stored password for a database file
   list-keys                              List the labels of the enrolled keys
@@ -44,6 +45,7 @@ fn main() -> Result<()> {
         ["enroll", "--label", label, "--database", database] => enroll(label, database),
         ["enroll-key", "--label", label] => enroll_key(label),
         ["remove-key", "--label", label] => remove_key(label),
+        ["check-key"] => check_key(),
         ["set-secret"] => set_secret(ANY),
         ["set-secret", "--database", database] => set_secret(database),
         ["remove-secret", "--database", database] => remove_secret(database),
@@ -110,10 +112,27 @@ fn remove_key(label: &str) -> Result<()> {
     Ok(())
 }
 
+fn check_key() -> Result<()> {
+    let config = Config::load(&Config::path()?)?;
+    let key = choose_key()?;
+    let pin = hidden("FIDO2 PIN: ")?;
+    println!("Touch your security key.");
+    println!("{}", ops::check_key(&config, &key, &pin)?);
+    Ok(())
+}
+
 fn list_keys() -> Result<()> {
-    let vault = Vault::load(&Config::load(&Config::path()?)?.vault)?;
+    let config = Config::load(&Config::path()?)?;
+    let vault = Vault::load(&config.vault)?;
     for (label, _) in vault.entries() {
         println!("{label}");
+    }
+    // On stderr, so shell completion still reads only labels.
+    for name in config.conflicts() {
+        eprintln!(
+            "Warning: sync conflict {name} in {}. Keep the file with all your keys as vault.toml and delete the other.",
+            config.folder.display()
+        );
     }
     Ok(())
 }

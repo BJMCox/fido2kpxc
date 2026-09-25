@@ -84,3 +84,83 @@ fn background_keepassxc_is_not_a_prompt() {
     let locked = texts(&[&database]);
     assert!(!is_password_prompt(&focus(false, "AXTextField", &locked)));
 }
+
+#[test]
+fn unlock_screen_gone_means_unlocked() {
+    let (_dir, database, _) = files();
+    let before = texts(&["Unlock KeePassXC Database", &database, "Password"]);
+    let after = texts(&["Entries", "Title", "Username"]);
+    assert_eq!(
+        judge("pdb.kdbx", &before, &after, true, true),
+        Some(Verdict::Unlocked)
+    );
+}
+
+#[test]
+fn unlock_screen_still_there_quotes_the_new_message() {
+    let (_dir, database, _) = files();
+    let before = texts(&["Unlock KeePassXC Database", &database, "Password"]);
+    let after = texts(&[
+        "Unlock KeePassXC Database",
+        &database,
+        "Invalid credentials were provided, please try again.",
+        "Password",
+    ]);
+    assert_eq!(
+        judge("pdb.kdbx", &before, &after, true, false),
+        Some(Verdict::Rejected(Some(
+            "Invalid credentials were provided, please try again.".to_owned()
+        )))
+    );
+}
+
+#[test]
+fn a_message_shown_before_the_press_is_not_quoted() {
+    let (_dir, database, _) = files();
+    let before = texts(&[&database, "Invalid credentials", ""]);
+    let after = texts(&[&database, "Invalid credentials", ""]);
+    assert_eq!(
+        judge("pdb.kdbx", &before, &after, true, true),
+        Some(Verdict::Rejected(None))
+    );
+}
+
+#[test]
+fn another_database_on_screen_means_this_one_unlocked() {
+    let (dir, database, _) = files();
+    let other = dir.path().join("work.kdbx");
+    std::fs::copy(&database, &other).unwrap();
+    let before = texts(&[&database]);
+    let after = texts(&[&other.to_string_lossy()]);
+    assert_eq!(
+        judge("pdb.kdbx", &before, &after, true, true),
+        Some(Verdict::Unlocked)
+    );
+}
+
+#[test]
+fn a_running_unlock_is_not_judged() {
+    // KeePassXC answers during a long key derivation with the unlock screen still up.
+    let (_dir, database, _) = files();
+    let before = texts(&["Unlock KeePassXC Database", &database, "Password"]);
+    assert_eq!(judge("pdb.kdbx", &before, &before, true, false), None);
+}
+
+#[test]
+fn a_running_unlock_ends_as_unlocked_when_the_screen_goes() {
+    let (_dir, database, _) = files();
+    let before = texts(&[&database]);
+    assert_eq!(
+        judge("pdb.kdbx", &before, &texts(&["Entries"]), true, false),
+        Some(Verdict::Unlocked)
+    );
+}
+
+#[test]
+fn a_message_while_the_screen_is_disabled_is_not_a_failure() {
+    // KeePassXC can show a status message of its own while it unlocks.
+    let (_dir, database, _) = files();
+    let before = texts(&[&database]);
+    let now = texts(&[&database, "Touch your hardware key to continue"]);
+    assert_eq!(judge("pdb.kdbx", &before, &now, false, false), None);
+}

@@ -210,3 +210,34 @@ fn create_never_makes_a_missing_parent_folder() {
     assert!(two_key_vault(b"hunter2").save(&path, true).is_err());
     assert!(!dir.path().join("missing").exists());
 }
+
+#[test]
+fn check_names_the_key_and_opens_every_password() {
+    let mut vault = two_key_vault(b"hunter2");
+    vault
+        .set_secret(&unlock(1, 10), "pdb.kdbx", b"other")
+        .unwrap();
+    let check = vault.check(&unlock(2, 20)).unwrap();
+    assert_eq!(check.label, "backup");
+    assert_eq!(check.opened, [ANY, "pdb.kdbx"]);
+    assert!(check.failed.is_empty());
+}
+
+#[test]
+fn check_lists_a_password_that_fails_to_open() {
+    let mut vault = two_key_vault(b"hunter2");
+    vault
+        .set_secret(&unlock(1, 10), "pdb.kdbx", b"other")
+        .unwrap();
+    vault.secrets[1].ciphertext[0] ^= 1;
+    let check = vault.check(&unlock(1, 10)).unwrap();
+    assert_eq!(check.label, "primary");
+    assert_eq!(check.opened, [ANY]);
+    assert_eq!(check.failed, ["pdb.kdbx"]);
+}
+
+#[test]
+fn check_refuses_a_key_that_is_not_enrolled() {
+    let vault = two_key_vault(b"hunter2");
+    assert!(vault.check(&unlock(3, 30)).is_err());
+}

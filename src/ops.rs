@@ -5,7 +5,7 @@ use anyhow::{Result, ensure};
 
 use crate::config::Config;
 use crate::fido::{self, Key};
-use crate::vault::{ANY, Unlock, Vault};
+use crate::vault::{ANY, Check, Unlock, Vault};
 
 /// The security key to use: the only one plugged in, or the one the user touches among several.
 pub fn choose_key() -> Result<Key> {
@@ -100,6 +100,43 @@ pub fn set_secret(
     vault.save(&config.vault, false)
 }
 
+/// Reports which enrolled key is inserted and whether it opens every stored password.
+/// Needs one touch and fills nothing.
+pub fn check_key(config: &Config, key: &Key, pin: &str) -> Result<String> {
+    let vault = Vault::load(&config.vault)?;
+    let unlock = fido::derive(key, pin, &vault.salt(), &vault.cred_ids())?;
+    Ok(report(&vault.check(&unlock)?))
+}
+
+fn report(check: &Check) -> String {
+    let list = |names: &[String]| {
+        names
+            .iter()
+            .map(|name| describe(name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let opens = match (check.opened.as_slice(), check.failed.is_empty()) {
+        ([], true) => "The vault holds no passwords yet.".to_owned(),
+        ([only], true) => format!("It opens the stored password for {}.", describe(only)),
+        (all, true) => format!(
+            "It opens all {} stored passwords: {}.",
+            all.len(),
+            list(all)
+        ),
+        ([], false) => format!(
+            "The password for {} fails to decrypt. Store it again.",
+            list(&check.failed)
+        ),
+        (some, false) => format!(
+            "It opens {}, but the password for {} fails to decrypt. Store it again.",
+            list(some),
+            list(&check.failed)
+        ),
+    };
+    format!("This key is enrolled as {:?}. {opens}", check.label)
+}
+
 /// Names the catch-all entry in words, so messages never show a bare `*`.
 pub fn describe(database: &str) -> &str {
     if database == ANY {
@@ -108,3 +145,6 @@ pub fn describe(database: &str) -> &str {
         database
     }
 }
+
+#[cfg(test)]
+mod tests;
