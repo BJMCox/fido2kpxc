@@ -7,7 +7,6 @@
 <a href="https://slsa.dev"><img src="https://slsa.dev/images/gh-badge-level3.svg" alt="SLSA Level 3"></a>
 <a href="https://github.com/BJMCox/fido2kpxc/releases/latest"><img src="https://img.shields.io/github/v/release/BJMCox/fido2kpxc?label=release" alt="Latest release"></a>
 <a href="https://github.com/BJMCox/fido2kpxc/releases/latest"><img src="https://img.shields.io/github/release-date/BJMCox/fido2kpxc" alt="Release date"></a>
-<a href="https://github.com/BJMCox/fido2kpxc/releases"><img src="https://img.shields.io/github/downloads/BJMCox/fido2kpxc/total" alt="Downloads"></a>
 <a href="LICENSE"><img src="https://img.shields.io/github/license/BJMCox/fido2kpxc" alt="License"></a>
 </p>
 <p align="center">
