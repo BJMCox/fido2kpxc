@@ -18,86 +18,70 @@
 <a href="https://github.com/BJMCox/fido2kpxc/issues"><img src="https://img.shields.io/github/issues/BJMCox/fido2kpxc" alt="Open issues"></a>
 </p>
 
-fido2kpxc is a macOS menu-bar app that unlocks KeePassXC with a FIDO2 security key: a PIN and a touch.
+fido2kpxc is a macOS menu-bar app that unlocks KeePassXC with a FIDO2 security key.
 
-When KeePassXC asks for its database password, fido2kpxc shows a PIN panel. After the PIN and a touch, it fills in the password and presses Unlock, without using the clipboard. An optional "Copy Password" menu item, off by default, is the fallback.
+When KeePassXC asks for its password, enter the key's PIN and touch the key. fido2kpxc fills in the password and presses Unlock, without the clipboard. An optional "Copy Password" menu item, off by default, is the fallback.
 
-The vault encrypts each database password under a random data key, and each enrolled security key wraps that data key with its FIDO2 hmac-secret output. The key checks the PIN in hardware, so a wrong PIN yields nothing.
+Each enrolled key wraps the vault's data key with its FIDO2 hmac-secret output. The key checks the PIN in hardware.
 
 ## Requirements
 
-- macOS 13 or later on a Mac with Apple silicon
+- macOS 13 or later on Apple silicon
 - KeePassXC 2.7 or later
-- A FIDO2 security key with hmac-secret and a PIN, of any brand, for example YubiKey, Token2, or Google Titan. `enroll` refuses keys without hmac-secret. Set a PIN with the vendor's tool or in Chrome at `chrome://settings/securityKeys`.
+- A FIDO2 security key with hmac-secret and a PIN, of any brand, for example YubiKey, Token2, or Google Titan. `enroll` refuses keys without hmac-secret. Set a PIN with the vendor's tool or at `chrome://settings/securityKeys`.
 
 ## Install
 
-1. Download the `.dmg` or `.pkg` from the latest release. Drag the app from the `.dmg` to Applications, or open the `.pkg`, which installs a root-owned `/Applications/fido2kpxc.app` and runs no scripts. Both are self-signed. On first launch, right-click the app and choose Open. If macOS blocks the downloaded `.pkg`, choose "Open Anyway" in System Settings > Privacy & Security.
-2. Choose "Settings…" in the menu and set the vault folder. The vault is `<folder>/vault.toml`, so give it a folder of its own. You can also edit `~/Library/Application Support/fido2kpxc/config.toml`:
+1. Download the `.dmg` or `.pkg` from the latest release and install the app. The `.pkg` installs only `/Applications/fido2kpxc.app` and runs no scripts. The app is self-signed, not notarized by Apple, and the `.pkg` itself is unsigned, so macOS can refuse to open them the first time. If it does, click Done, open System Settings > Privacy & Security, and click "Open Anyway" under Security. Confirm with your password, then open the file again. macOS 15 and later no longer offer right-click > Open for this.
+2. Choose "Set Up…" in the menu. Type a folder for the vault or pick one with "Choose…", then save. Enter the database password twice and the PIN, and touch the key twice. Leave "Database file" blank to use the password for any database, or pick the file with "Choose…".
+3. The last panel offers "Start at Login" and "Grant Accessibility…". fido2kpxc needs Accessibility access to fill in KeePassXC. If you skip either, choose it later in the menu.
 
-   ```toml
-   folder = "~/Sync/fido2kpxc"     # required: the folder that holds vault.toml
-   autofill = "fill-and-unlock"    # "off", "fill", or "fill-and-unlock"
-   copy_password = false           # true shows "Copy Password" in the menu
-   clear_seconds = 20              # clipboard clear delay for Copy Password, at most 3600
-   ```
+"Settings…" changes the settings later. They live in `~/Library/Application Support/fido2kpxc/config.toml`:
 
-3. Link the command into a folder on your `PATH`. The link follows reinstalls.
+```toml
+folder = "~/Sync/fido2kpxc"     # required: the folder that holds vault.toml
+autofill = "fill-and-unlock"    # "off", "fill", or "fill-and-unlock"
+copy_password = false           # true shows "Copy Password" in the menu
+clear_seconds = 20              # clipboard clear delay for Copy Password, at most 3600
+```
 
-   ```sh
-   ln -s /Applications/fido2kpxc.app/Contents/MacOS/fido2kpxc ~/.local/bin/fido2kpxc
-   ```
+To use the vault on another Mac, sync its folder there. Choose "Set Up…" or "Settings…", and pick the folder or the `vault.toml` in it. You do not need to enroll again.
 
-4. Enroll your key, either with "Set Up…" in the menu or in Terminal. Enter the database password twice and the PIN, then touch the key twice. `enroll` creates the folder if its parent exists.
-
-   ```sh
-   fido2kpxc enroll --label primary
-   ```
-
-5. Choose "Grant Accessibility…" and allow fido2kpxc in System Settings. "Start at Login" is optional.
-
-To use the vault on another Mac, sync or copy its folder there with any tool, install fido2kpxc, and set that Mac's folder path. You do not need to enroll again.
-
-If two Macs change the vault at once, the sync tool may keep both versions, for example as `vault.sync-conflict-….toml` (Syncthing), `vault (… conflicted copy …).toml` (Dropbox), or `vault 2.toml` (iCloud). fido2kpxc then shows a warning icon and names the file in its menu, but unlocking keeps working. Keep the file with all your keys and passwords as `vault.toml`, delete the other, and add anything missing again.
+If a sync tool keeps two versions of the vault, such as `vault.sync-conflict-….toml`, `vault (… conflicted copy …).toml`, or `vault 2.toml`, fido2kpxc shows a warning and names the file. Keep both files until you have compared them, because each Mac may have added a key or password that the other file lacks. Each file lists its key labels and database names in plain text. Add anything missing from `vault.toml` with the menu, then delete the other copy.
 
 ## Usage
 
-| Command | Action |
-|---|---|
-| `enroll --label NAME [--database FILE]` | Create the vault with the first security key. |
-| `enroll-key --label NAME` | Add a backup key, of any brand. Unlock with an enrolled key first, then swap keys. |
-| `remove-key --label NAME` | Remove a key, for example a lost one, and move the vault to a new data key. Every remaining key needs a touch. |
-| `check-key` | Show which enrolled key is plugged in and check that it opens every stored password. It fills nothing. Test backup keys this way now and then. |
-| `set-secret [--database FILE]` | Store the password for a database file such as `pdb.kdbx`. Without `--database`, it covers every database without its own entry (`*`). |
-| `remove-secret --database FILE` | Remove the password for a database file. |
-| `list-keys`, `list-databases` | List the enrolled keys or the stored databases. |
-| `completions zsh` | Print the zsh completion script. |
-| `help`, `--help`, `-h` | Show the commands. |
-
-Run each as `fido2kpxc <command>`. The menu's "Set Up…", "Add Security Key…", "Remove Security Key…", "Check a Security Key…", and "Set Database Password…" do the same without Terminal. "Copy Diagnostics" copies a report of what the app sees (config, vault, Accessibility, and KeePassXC's unlock screen) for bug reports. It holds no passwords or key material.
-
-### Several security keys
-
-With several keys plugged in, all of them blink. Touch the one to use, enter its PIN, and touch it again, as browsers do. This applies to unlocking, the menu's key actions, and the terminal commands. It needs CTAP 2.1, which current YubiKey, Token2, and Google Titan models support. With older keys, plug in only one.
-
-### Several databases
-
-The vault stores one password per database file name, which fido2kpxc reads from KeePassXC's unlock screen. The `*` entry covers every database without its own.
-
-If you change a database password in KeePassXC, the stored one no longer works. With `autofill = "fill-and-unlock"`, fido2kpxc notices that KeePassXC refused it, quotes KeePassXC's message, and offers to store the new password.
-
-### Tab completion (zsh)
+The menu covers every task. For the terminal, link the command into your `PATH`:
 
 ```sh
-fido2kpxc completions zsh > ~/.zfunc/_fido2kpxc   # any folder on your $fpath
-exec zsh
+ln -s /Applications/fido2kpxc.app/Contents/MacOS/fido2kpxc ~/.local/bin/fido2kpxc
 ```
 
-It completes commands, options, enrolled key labels, and stored database names.
+| Command | Action |
+|---|---|
+| `enroll --label NAME [--database FILE]` | Create the vault with the first key. |
+| `enroll-key --label NAME` | Add a backup key. Unlock with an enrolled key, then swap keys. |
+| `remove-key --label NAME [--label NAME ...]` | Remove one or more keys, such as lost ones, and re-key the vault. Every kept key needs a touch. |
+| `check-key` | Check that the plugged-in key opens every stored password. |
+| `set-secret [--database FILE]` | Store a database password. `FILE` is a file name such as `pdb.kdbx`, and a path counts as its file name. Without `--database`, it covers every database without its own entry. |
+| `remove-secret --database FILE` | Remove a database password. |
+| `list-keys`, `list-databases` | List the enrolled keys or the stored databases. |
+| `completions zsh` | Print the zsh completion script. Save it as `_fido2kpxc` in a folder on your `$fpath`. |
+| `help` | Show the commands. |
+
+If the PIN panel does not open, for example after you cancel it, choose "Unlock KeePassXC" in the menu. "Copy Diagnostics" in the menu copies a report for bug reports. It holds no passwords or key material.
+
+With several keys plugged in, all of them blink. Touch the one to use. This needs CTAP 2.1 authenticatorSelection. With keys that lack it, plug in only one.
+
+Cancel on a touch panel stops the wait, but the key can blink until its own timeout. A touch in that time answers the cancelled request, so the next request needs another touch. To end the blinking at once, remove the key.
+
+While KeePassXC offers quick unlock by Touch ID, fido2kpxc does not open the PIN panel. The PIN panel opens when KeePassXC asks for the password, such as at the first unlock or after Cancel on the Touch ID screen.
+
+The vault stores one password per database file name, and `*` covers the rest. Two databases with the same file name share one entry. If KeePassXC refuses a stored password, fido2kpxc offers to store the new one (`fill-and-unlock` only).
 
 ## Verify a release
 
-Each release carries signed SLSA build provenance (Build Level 3), which records that GitHub Actions built the file from this repository's tag with `build.yml`:
+Each release carries SLSA Build Level 3 provenance:
 
 ```sh
 gh attestation verify fido2kpxc-<version>.dmg --repo BJMCox/fido2kpxc \
@@ -105,16 +89,37 @@ gh attestation verify fido2kpxc-<version>.dmg --repo BJMCox/fido2kpxc \
 shasum -a 256 -c SHA256SUMS
 ```
 
+The release notes link each installer's VirusTotal scan.
+
 ## Limits
 
-- fido2kpxc finds KeePassXC's unlock screen by its database path label, which works in every UI language. If a KeePassXC update changes that screen, autofill can stop. "Copy Diagnostics" shows what the app sees, and typing the password by hand always works.
-- A blocked FIDO2 PIN needs a FIDO2 reset with the vendor's tool, which erases the enrollment. Enroll a backup key with `enroll-key`.
+- The key protects the stored password, not the database. fido2kpxc adds a way to unlock, not a second factor: the database password still opens the database without the key. Keep the database password strong, and keep a copy of it outside fido2kpxc in case you lose every key.
+- Every enrolled key opens every stored password.
+- The password reaches KeePassXC through macOS Accessibility, so it is in memory on the Mac during each unlock.
+- Key labels are not authenticated. Someone who can write the vault can swap them, but removing a key still needs a touch from every kept key.
+- Every unlock needs the key's FIDO2 PIN and a touch. Keys without a PIN do not work.
+- If a KeePassXC update changes its unlock screen, autofill can stop. Type the password by hand, and attach "Copy Diagnostics" to a bug report.
+- A blocked PIN needs a FIDO2 reset, which erases the enrollment. Enroll a backup key.
+
+## Recovery
+
+To open a database, you need its password, or all of these: `vault.toml`, an enrolled key, and that key's PIN. The key alone cannot rebuild the vault, so back up the vault folder.
+
+"Check a Security Key…" shows that a key opens the stored passwords. It does not show that they still open KeePassXC. After you change a database password, store the new one and unlock once with fido2kpxc to test it.
+
+If you lose a key:
+
+1. Remove it with "Remove Security Key…".
+2. Change the password of each database in KeePassXC.
+3. Store the new passwords with "Set Database Password…".
+
+Old copies of the vault, such as backups or sync history, still open the old passwords with the lost key. Only step 2 makes those old passwords useless.
 
 ## Upgrade and uninstall
 
-To upgrade, choose "Quit" in the menu, install the new version, and open it again. The Accessibility grant stays.
+To upgrade, quit fido2kpxc, install the new version, and open it. The Accessibility grant stays.
 
-To uninstall, uncheck "Start at Login", quit fido2kpxc, run the commands below, and remove fido2kpxc from System Settings > Privacy & Security > Accessibility. The vault folder stays where you put it.
+To uninstall, uncheck "Start at Login", quit fido2kpxc, run the commands below, and remove fido2kpxc from System Settings > Privacy & Security > Accessibility. The vault folder stays.
 
 ```sh
 sudo rm -rf /Applications/fido2kpxc.app

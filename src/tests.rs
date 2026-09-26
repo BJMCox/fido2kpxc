@@ -30,3 +30,16 @@ fn completion_script_offers_every_option() {
         );
     }
 }
+
+#[test]
+fn remove_key_takes_one_or_more_labels() {
+    assert_eq!(labels(&["--label", "a"]), Some(vec!["a".to_owned()]));
+    assert_eq!(
+        labels(&["--label", "a", "--label", "b"]),
+        Some(vec!["a".to_owned(), "b".to_owned()])
+    );
+    assert_eq!(labels(&[]), None);
+    assert_eq!(labels(&["--label"]), None);
+    assert_eq!(labels(&["--label", "a", "b"]), None);
+    assert_eq!(labels(&["--database", "a"]), None);
+}

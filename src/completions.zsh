@@ -5,7 +5,7 @@ _fido2kpxc() {
   commands=(
     'enroll:create the vault with the first security key'
     'enroll-key:add a backup security key'
-    'remove-key:remove a key and move the vault to a new data key'
+    'remove-key:remove keys and move the vault to a new data key'
     'check-key:show which enrolled key is plugged in and test it'
     'set-secret:store the password for a database'
     'remove-secret:remove the stored password for a database'
@@ -38,9 +38,10 @@ _fido2kpxc() {
       fi
       ;;
     remove-key)
-      if (( CURRENT == 3 )); then
+      # --label NAME repeats, so odd words are --label and even words are key labels.
+      if (( CURRENT % 2 )); then
         compadd -- --label
-      elif (( CURRENT == 4 )); then
+      else
         compadd -- ${(f)"$(fido2kpxc list-keys 2>/dev/null)"}
       fi
       ;;

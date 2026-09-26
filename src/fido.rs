@@ -5,8 +5,9 @@ use ctap_hid_fido2::fidokey::get_assertion::get_assertion_params::Extension as G
 use ctap_hid_fido2::fidokey::make_credential::make_credential_params::Extension as Mext;
 use ctap_hid_fido2::fidokey::{GetAssertionArgsBuilder, MakeCredentialArgsBuilder};
 use ctap_hid_fido2::{FidoKeyHid, FidoKeyHidFactory, HidParam, LibCfg};
+use objc2_foundation::NSString;
 use std::sync::{Arc, mpsc};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::vault::Unlock;
 
@@ -51,6 +52,15 @@ impl fmt::Display for FidoError {
 }
 
 impl std::error::Error for FidoError {}
+
+/// True when `error` is a wrong PIN. Then the same key is asked again, while any other failure
+/// may need another key.
+pub fn wrong_pin(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<FidoError>(),
+        Some(FidoError::WrongPin { .. })
+    )
+}
 
 /// A plugged-in FIDO device, as the operating system names it.
 pub type Device = HidParam;
@@ -114,6 +124,87 @@ pub fn select(devices: Vec<HidParam>) -> Result<Key, FidoError> {
     })
 }
 
+/// The PIN in Unicode normalization form C, which CTAP requires before hashing, so a PIN typed
+/// or pasted in another but equivalent form still matches. Whitespace stays.
+fn nfc(pin: &str) -> Zeroizing<String> {
+    Zeroizing::new(
+        NSString::from_str(pin)
+            .precomposedStringWithCanonicalMapping()
+            .to_string(),
+    )
+}
+
+/// The PIN protocol to use with a key that lists `listed`. Protocol 1 stays whenever the key
+/// supports it, as every key that worked before does. A key without the list is CTAP 2.0.
+fn pin_protocol(listed: &[u32]) -> u8 {
+    if listed.contains(&2) && !listed.contains(&1) {
+        2
+    } else {
+        1
+    }
+}
+
+/// The key's limits for credential lists in one request. 0 means none reported.
+struct Limits {
+    count: u32,
+    id_length: u32,
+}
+
+/// Splits `ids` for a key with these limits, or `None` when one plain request fits. IDs longer
+/// than `id_length` cannot belong to the key, so they are left out.
+fn chunks<'a>(ids: &[&'a [u8]], count: u32, id_length: u32) -> Option<Vec<Vec<&'a [u8]>>> {
+    let kept: Vec<&[u8]> = ids
+        .iter()
+        .copied()
+        .filter(|id| id_length == 0 || id.len() <= id_length as usize)
+        .collect();
+    if kept.len() == ids.len() && (count == 0 || ids.len() <= count as usize) {
+        return None;
+    }
+    let size = if count == 0 {
+        kept.len()
+    } else {
+        count as usize
+    };
+    Some(kept.chunks(size.max(1)).map(<[_]>::to_vec).collect())
+}
+
+/// The credential in `parts` that the key holds, found without a PIN or a touch (CTAP up=false),
+/// so each request stays within the key's list limits.
+fn preflight(device: &FidoKeyHid, parts: &[Vec<&[u8]>]) -> Result<Option<Vec<u8>>, FidoError> {
+    for part in parts {
+        let challenge = challenge()?;
+        let mut builder = GetAssertionArgsBuilder::new(RP_ID, &challenge)
+            .without_pin_and_uv()
+            .without_up();
+        for id in part {
+            builder = builder.add_credential_id(id);
+        }
+        match device
+            .get_assertion_with_args(&builder.build())
+            .map_err(classify)
+        {
+            Ok(assertions) => {
+                let id = assertions
+                    .into_iter()
+                    .next()
+                    .map(|a| a.credential_id)
+                    .unwrap_or_default();
+                return match (id.is_empty(), part.as_slice()) {
+                    (false, _) => Ok(Some(id)),
+                    (true, [only]) => Ok(Some(only.to_vec())),
+                    (true, _) => Err(FidoError::Other(anyhow!(
+                        "The key returned no credential ID"
+                    ))),
+                };
+            }
+            Err(FidoError::NotEnrolled) => {}
+            Err(other) => return Err(other),
+        }
+    }
+    Ok(None)
+}
+
 /// Makes a non-resident hmac-secret credential and returns its output for `salt`. Needs two touches.
 pub fn enroll(
     key: &Key,
@@ -121,11 +212,20 @@ pub fn enroll(
     salt: &[u8; 32],
     exclude: &[&[u8]],
 ) -> Result<Unlock, FidoError> {
-    let device = open(key)?;
+    let (device, limits) = open(key)?;
+    let pin = nfc(pin);
+    let limited = chunks(exclude, limits.count, limits.id_length);
+    if let Some(parts) = &limited
+        && preflight(&device, parts)?.is_some()
+    {
+        return Err(FidoError::AlreadyEnrolled);
+    }
+    // The preflight already checked every credential that would not fit in one list.
+    let exclude: &[&[u8]] = if limited.is_some() { &[] } else { exclude };
     let extensions = [Mext::HmacSecret(Some(true))];
     let challenge = challenge()?;
     let mut builder = MakeCredentialArgsBuilder::new(RP_ID, &challenge)
-        .pin(pin)
+        .pin(&pin)
         .extensions(&extensions);
     for id in exclude {
         builder = builder.exclude_authenticator(id);
@@ -142,7 +242,12 @@ pub fn enroll(
             "This key does not support hmac-secret"
         )));
     }
-    assert_hmac(&device, pin, salt, &[&attestation.credential_descriptor.id])
+    assert_hmac(
+        &device,
+        &pin,
+        salt,
+        &[&attestation.credential_descriptor.id],
+    )
 }
 
 /// Returns the hmac-secret output of whichever enrolled credential the inserted key holds.
@@ -152,7 +257,15 @@ pub fn derive(
     salt: &[u8; 32],
     cred_ids: &[&[u8]],
 ) -> Result<Unlock, FidoError> {
-    assert_hmac(&open(key)?, pin, salt, cred_ids)
+    let (device, limits) = open(key)?;
+    let pin = nfc(pin);
+    match chunks(cred_ids, limits.count, limits.id_length) {
+        None => assert_hmac(&device, &pin, salt, cred_ids),
+        Some(parts) => {
+            let found = preflight(&device, &parts)?.ok_or(FidoError::NotEnrolled)?;
+            assert_hmac(&device, &pin, salt, &[&found])
+        }
+    }
 }
 
 fn assert_hmac(
@@ -169,7 +282,7 @@ fn assert_hmac(
     for id in cred_ids {
         builder = builder.add_credential_id(id);
     }
-    let assertion = device
+    let mut assertion = device
         .get_assertion_with_args(&builder.build())
         .map_err(|e| with_retries(device, e))?
         .into_iter()
@@ -183,6 +296,12 @@ fn assert_hmac(
             _ => None,
         })
         .ok_or_else(|| FidoError::Other(anyhow!("The key returned no hmac-secret output")))?;
+    // Only the Zeroizing copy may keep the wrapping secret.
+    for extension in &mut assertion.extensions {
+        if let Gext::HmacSecret(Some(bytes)) = extension {
+            bytes.zeroize();
+        }
+    }
     // CTAP lets the key omit the credential ID when the allow list has one entry.
     let cred_id = match (assertion.credential_id.is_empty(), cred_ids) {
         (true, [only]) => only.to_vec(),
@@ -191,9 +310,18 @@ fn assert_hmac(
     Ok(Unlock { cred_id, output })
 }
 
-fn open(key: &Key) -> Result<FidoKeyHid, FidoError> {
-    FidoKeyHidFactory::create_by_params(std::slice::from_ref(&key.0), &LibCfg::init())
-        .map_err(classify)
+/// Opens the key with a PIN protocol it supports, and reads its credential list limits.
+fn open(key: &Key) -> Result<(FidoKeyHid, Limits), FidoError> {
+    let device = FidoKeyHidFactory::create_by_params(std::slice::from_ref(&key.0), &LibCfg::init())
+        .map_err(classify)?;
+    // A key that cannot report its info counts as CTAP 2.0: protocol 1 and no list limits.
+    let info = device.get_info().unwrap_or_default();
+    let limits = Limits {
+        count: info.max_credential_count_in_list,
+        id_length: info.max_credential_id_length,
+    };
+    let protocol = pin_protocol(&info.pin_uv_auth_protocols);
+    Ok((device.with_pin_protocol_version(protocol), limits))
 }
 
 fn challenge() -> Result<[u8; 32], FidoError> {

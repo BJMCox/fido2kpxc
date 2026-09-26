@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::Write;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
@@ -9,11 +10,14 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 const VERSION: u32 = 2;
+/// A vault with a few keys and passwords is a few kilobytes. The bound keeps parsing fast.
+const MAX_VAULT_BYTES: u64 = 1 << 20;
 
 /// The database name that matches any database without its own entry.
 pub const ANY: &str = "*";
 
 /// One security key's hmac-secret output for its enrolled credential.
+#[derive(Clone)]
 pub struct Unlock {
     pub cred_id: Vec<u8>,
     pub output: Zeroizing<[u8; 32]>,
@@ -26,14 +30,51 @@ pub struct Check {
     pub failed: Vec<String>,
 }
 
+/// Deserializes only through [`VaultFile`], so every vault passes [`Vault::validate`].
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "VaultFile")]
 pub struct Vault {
     version: u32,
     #[serde(with = "b64")]
     salt: Vec<u8>,
     keys: Vec<KeyEntry>,
     secrets: Vec<SecretEntry>,
+    /// The file text this vault was loaded from or last saved as. A save refuses to replace a
+    /// file that no longer holds it.
+    #[serde(skip)]
+    loaded: Option<String>,
+}
+
+/// The version 2 layout as read, before validation.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VaultFile {
+    version: u32,
+    #[serde(with = "b64")]
+    salt: Vec<u8>,
+    keys: Vec<KeyEntry>,
+    secrets: Vec<SecretEntry>,
+}
+
+impl TryFrom<VaultFile> for Vault {
+    type Error = anyhow::Error;
+
+    fn try_from(file: VaultFile) -> Result<Self> {
+        ensure!(
+            file.version == VERSION,
+            "The vault has version {}, which this fido2kpxc cannot read",
+            file.version
+        );
+        let vault = Self {
+            version: file.version,
+            salt: file.salt,
+            keys: file.keys,
+            secrets: file.secrets,
+            loaded: None,
+        };
+        vault.validate()?;
+        Ok(vault)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -92,6 +133,7 @@ impl Vault {
             salt: salt.to_vec(),
             keys: Vec::new(),
             secrets: Vec::new(),
+            loaded: None,
         };
         vault.seal(&key, database, secret)?;
         vault.wrap(&key, label, unlock)?;
@@ -162,11 +204,12 @@ impl Vault {
             .context("This security key is not enrolled in the vault")?
             .label
             .clone();
+        let key = self.unwrap(unlock)?;
         let (mut opened, mut failed) = (Vec::new(), Vec::new());
-        for database in self.databases() {
-            match self.open(unlock, Some(database)) {
-                Ok(_) => opened.push(database.to_owned()),
-                Err(_) => failed.push(database.to_owned()),
+        for entry in &self.secrets {
+            match self.decrypt(&key, entry) {
+                Ok(_) => opened.push(entry.database.clone()),
+                Err(_) => failed.push(entry.database.clone()),
             }
         }
         Ok(Check {
@@ -184,27 +227,39 @@ impl Vault {
             .collect()
     }
 
-    /// Drops the key labeled `label` and moves every password to a new data key.
+    /// The labels and credential IDs of the keys that stay after removing `labels`. Fails on an
+    /// unknown label, or if no key would stay.
+    pub fn kept_keys(&self, labels: &[&str]) -> Result<Vec<(&str, &[u8])>> {
+        for label in labels {
+            ensure!(
+                self.keys.iter().any(|k| k.label == *label),
+                "No key is labeled {label:?}"
+            );
+        }
+        let kept: Vec<(&str, &[u8])> = self
+            .entries()
+            .into_iter()
+            .filter(|(label, _)| !labels.contains(label))
+            .collect();
+        ensure!(!kept.is_empty(), "At least one key must stay enrolled");
+        Ok(kept)
+    }
+
+    /// Drops the keys in `labels` and moves every password to a new data key.
     /// A removed key that kept an old vault copy knows the old data key, so every
-    /// remaining key must be present in `remaining` to wrap the new one.
-    pub fn remove_key(&mut self, label: &str, remaining: &[Unlock]) -> Result<()> {
-        ensure!(
-            self.keys.iter().any(|k| k.label == label),
-            "No key is labeled {label:?}"
-        );
-        ensure!(self.keys.len() > 1, "The last key cannot be removed");
+    /// kept key must be present in `remaining` to wrap the new one.
+    pub fn remove_keys(&mut self, labels: &[&str], remaining: &[Unlock]) -> Result<()> {
         let kept: Vec<(String, &Unlock)> = self
-            .keys
-            .iter()
-            .filter(|k| k.label != label)
-            .map(|k| {
+            .kept_keys(labels)?
+            .into_iter()
+            .map(|(label, cred_id)| {
                 let unlock = remaining
                     .iter()
-                    .find(|u| u.cred_id == k.cred_id)
-                    .with_context(|| format!("Key {:?} must be present", k.label))?;
+                    .find(|u| u.cred_id == cred_id)
+                    .with_context(|| format!("Key {label:?} must be present"))?;
                 // Proves each output is right before the old wrapping is discarded.
                 self.unwrap(unlock)?;
-                Ok((k.label.clone(), unlock))
+                Ok((label.to_owned(), unlock))
             })
             .collect::<Result<_>>()?;
         let old_key = self.unwrap(kept[0].1)?;
@@ -239,34 +294,61 @@ impl Vault {
         );
         ensure!(
             self.secrets.len() > 1,
-            "The last password cannot be removed"
+            "The vault must keep at least one password"
         );
         self.secrets.retain(|s| s.database != database);
         Ok(())
     }
 
     pub fn load(path: &Path) -> Result<Self> {
+        let size = std::fs::metadata(path)
+            .with_context(|| format!("Cannot read vault {}", path.display()))?
+            .len();
+        ensure!(
+            size <= MAX_VAULT_BYTES,
+            "The vault {} is larger than 1 MiB",
+            path.display()
+        );
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("Cannot read vault {}", path.display()))?;
-        let vault =
+        let mut vault =
             Self::parse(&text).with_context(|| format!("Invalid vault {}", path.display()))?;
+        vault.loaded = Some(text);
+        Ok(vault)
+    }
+
+    fn validate(&self) -> Result<()> {
+        ensure!(self.salt.len() == 32, "The vault salt has the wrong length");
+        ensure!(!self.keys.is_empty(), "The vault has no enrolled keys");
+        ensure!(!self.secrets.is_empty(), "The vault holds no password");
         ensure!(
-            vault.salt.len() == 32,
-            "The vault salt has the wrong length"
-        );
-        ensure!(!vault.keys.is_empty(), "The vault has no enrolled keys");
-        ensure!(!vault.secrets.is_empty(), "The vault holds no password");
-        ensure!(
-            vault.keys.iter().all(|k| k.nonce.len() == 24)
-                && vault.secrets.iter().all(|s| s.nonce.len() == 24),
+            self.keys.iter().all(|k| k.nonce.len() == 24)
+                && self.secrets.iter().all(|s| s.nonce.len() == 24),
             "A vault nonce has the wrong length"
         );
-        let databases = vault.databases();
+        let mut labels = HashSet::new();
+        for key in &self.keys {
+            ensure!(
+                labels.insert(key.label.as_str()),
+                "The vault has the label {:?} twice",
+                key.label
+            );
+        }
+        let mut cred_ids = HashSet::new();
         ensure!(
-            (1..databases.len()).all(|i| !databases[..i].contains(&databases[i])),
+            self.keys
+                .iter()
+                .all(|k| cred_ids.insert(k.cred_id.as_slice())),
+            "The vault holds the same security key twice"
+        );
+        let mut databases = HashSet::new();
+        ensure!(
+            self.secrets
+                .iter()
+                .all(|s| databases.insert(s.database.as_str())),
             "The vault stores a database name twice"
         );
-        Ok(vault)
+        Ok(())
     }
 
     fn parse(text: &str) -> Result<Self> {
@@ -277,7 +359,7 @@ impl Vault {
         match version {
             1 => {
                 let v1: VaultV1 = toml::from_str(text)?;
-                Ok(Self {
+                let vault = Self {
                     version: VERSION,
                     salt: v1.salt,
                     keys: v1.keys,
@@ -286,15 +368,22 @@ impl Vault {
                         nonce: v1.nonce,
                         ciphertext: v1.ciphertext,
                     }],
-                })
+                    loaded: None,
+                };
+                vault.validate()?;
+                Ok(vault)
             }
             2 => Ok(toml::from_str(text)?),
-            other => bail!("Unsupported vault version {other}"),
+            other => bail!(
+                "The vault has version {other}, from a newer fido2kpxc on another Mac. Update fido2kpxc on this Mac."
+            ),
         }
     }
 
-    /// Replaces the vault atomically. With `create`, refuses to replace an existing file.
-    pub fn save(&self, path: &Path, create: bool) -> Result<()> {
+    /// Replaces the vault atomically. With `create`, refuses to replace an existing file. Without
+    /// it, refuses to replace a file that changed since this vault was loaded, so a slow writer
+    /// cannot undo another writer's save, such as a key removal.
+    pub fn save(&mut self, path: &Path, create: bool) -> Result<()> {
         let dir = path.parent().context("The vault path has no directory")?;
         if create {
             // Creates only the configured folder. A missing parent means a wrong `folder` setting.
@@ -305,18 +394,37 @@ impl Vault {
                 _ => {}
             }
         }
+        // A lock on the folder serializes writers on this Mac without a file for sync tools to copy.
+        let lock =
+            std::fs::File::open(dir).with_context(|| format!("Cannot open {}", dir.display()))?;
+        // Some network file systems cannot lock (macOS's ENOTSUP 45, EOPNOTSUPP 102). The text
+        // comparison below still refuses a stale write there.
+        if let Err(e) = lock.lock()
+            && e.kind() != std::io::ErrorKind::Unsupported
+            && !matches!(e.raw_os_error(), Some(45 | 102))
+        {
+            return Err(e).with_context(|| format!("Cannot lock {}", dir.display()));
+        }
+        if !create {
+            ensure!(
+                std::fs::read_to_string(path).ok() == self.loaded,
+                "The vault changed while this ran, for example from another window or Mac. Nothing was saved. Try again."
+            );
+        }
+        let text = toml::to_string(self)?;
         // The rename below replaces the vault in one step, so readers never see a partial file.
         let mut temp = tempfile::Builder::new()
             .prefix(".fido2kpxc-")
             .suffix(".tmp")
             .tempfile_in(dir)?;
-        temp.write_all(toml::to_string(self)?.as_bytes())?;
+        temp.write_all(text.as_bytes())?;
         temp.as_file().sync_all()?;
         if create {
             temp.persist_noclobber(path)?;
         } else {
             temp.persist(path)?;
         }
+        self.loaded = Some(text);
         Ok(())
     }
 

@@ -87,3 +87,34 @@ fn conflicts_is_empty_for_a_missing_folder() {
     let config = Config::parse(r#"folder = "/nonexistent/fido2kpxc""#, Path::new("/h")).unwrap();
     assert!(config.conflicts().is_empty());
 }
+
+#[test]
+fn stamp_changes_when_a_sync_tool_rewrites_the_file_with_its_old_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.toml");
+    std::fs::write(&path, "a").unwrap();
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let before = stamp(&path);
+    std::fs::write(&path, "b").unwrap();
+    let file = std::fs::File::options().write(true).open(&path).unwrap();
+    file.set_modified(modified).unwrap();
+    assert_ne!(stamp(&path), before);
+}
+
+#[test]
+fn folder_stamp_changes_when_a_conflict_copy_appears() {
+    let dir = tempfile::tempdir().unwrap();
+    let before = stamp(dir.path());
+    std::fs::write(dir.path().join("vault 2.toml"), "").unwrap();
+    assert_ne!(stamp(dir.path()), before);
+}
+
+#[test]
+fn stamp_is_stable_and_absent_for_a_missing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    assert_eq!(stamp(&path), None);
+    std::fs::write(&path, "").unwrap();
+    assert!(stamp(&path).is_some());
+    assert_eq!(stamp(&path), stamp(&path));
+}

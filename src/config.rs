@@ -1,3 +1,4 @@
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
@@ -43,7 +44,7 @@ pub struct Config {
 }
 
 /// Written by "Open Config…" when no config exists. Every key is commented out until the user edits it.
-pub const TEMPLATE: &str = r#"# fido2kpxc settings. The app rereads this file every 2 seconds.
+pub const TEMPLATE: &str = r#"# fido2kpxc settings. The app rereads this file when it changes.
 
 # Required: the folder that holds vault.toml.
 # folder = "~/Synced/fido2kpxc"
@@ -57,6 +58,15 @@ pub const TEMPLATE: &str = r#"# fido2kpxc settings. The app rereads this file ev
 # Show "Copy Password" in the menu. It puts the password on the clipboard for clear_seconds.
 # copy_password = false
 "#;
+
+/// Identifies one version of a file or of a folder's listing. A replace changes the inode, and
+/// every write or rename changes the ctime, which no sync tool can set back.
+pub type Stamp = Option<(u64, i64, i64)>;
+
+pub fn stamp(path: &Path) -> Stamp {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.ino(), meta.ctime(), meta.ctime_nsec()))
+}
 
 fn default_clear_seconds() -> u64 {
     20
@@ -83,7 +93,7 @@ impl Config {
     ) -> String {
         let folder = toml::Value::String(folder.to_owned());
         format!(
-            "# fido2kpxc settings. The app rereads this file every 2 seconds.\n\n\
+            "# fido2kpxc settings. The app rereads this file when it changes.\n\n\
              # Required: the folder that holds vault.toml.\nfolder = {folder}\n\n\
              # Seconds before Copy Password clears the clipboard, at most 3600.\nclear_seconds = {clear_seconds}\n\n\
              # What happens when KeePassXC asks for its password: \"off\", \"fill\", or \"fill-and-unlock\".\n\
@@ -132,7 +142,7 @@ impl Config {
     pub fn check_folder(&self) -> Result<()> {
         ensure!(
             self.folder.is_dir() || self.folder.parent().is_some_and(Path::is_dir),
-            "Neither {} nor its parent folder exists. Check folder in the config.",
+            "Neither {} nor its parent folder exists. Check the folder setting.",
             self.folder.display()
         );
         Ok(())
@@ -155,7 +165,7 @@ impl Config {
         names
     }
 
-    fn parse(text: &str, home: &Path) -> Result<Self> {
+    pub(crate) fn parse(text: &str, home: &Path) -> Result<Self> {
         let mut config: Self = toml::from_str(text)?;
         // Each Mac keeps the folder under a different home, so allow `~/`.
         if let Ok(rest) = config.folder.strip_prefix("~") {

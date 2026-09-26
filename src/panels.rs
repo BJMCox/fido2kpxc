@@ -6,15 +6,16 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSButton, NSEvent, NSEventModifierFlags,
-    NSFloatingWindowLevel, NSImage, NSImageView, NSPanel, NSPopUpButton, NSResponder,
-    NSSecureTextField, NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSApplication, NSBackingStoreType, NSButton, NSControlStateValueOn, NSEvent,
+    NSEventModifierFlags, NSFloatingWindowLevel, NSImage, NSImageView, NSPanel, NSPopUpButton,
+    NSResponder, NSSecureTextField, NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObject, NSPoint, NSRect, NSSize, NSString, ns_string};
 
 const WIDTH: f64 = 420.0;
 const MARGIN: f64 = 20.0;
 const EYE: f64 = 24.0;
+const CHOOSE: f64 = 84.0;
 /// The app icon on each panel's left, as native alerts show it. A genuine fido2kpxc prompt is
 /// then recognizable at a glance.
 const ICON: f64 = 56.0;
@@ -66,15 +67,23 @@ pub enum Kind<'a> {
     Text {
         value: &'a str,
         secure: bool,
-        /// For secure fields: the action of an eye button that shows or hides the text.
-        /// The button's tag is the field's index.
-        reveal: Option<Sel>,
+        accessory: Option<Accessory>,
     },
     /// A pop-up menu. Its value is the selected option.
     Choice {
         options: Vec<String>,
         selected: usize,
     },
+    /// A checkbox titled `title`. Its value is `title` when checked, and empty otherwise.
+    Check { title: &'a str },
+}
+
+/// A button to the right of a text field. It sends its action with the field's index as its tag.
+pub enum Accessory {
+    /// For secure fields: an eye button that shows or hides the text.
+    Reveal(Sel),
+    /// A "Choose…" button, for a field that holds a path.
+    Choose(Sel),
 }
 
 impl<'a> Field<'a> {
@@ -82,7 +91,17 @@ impl<'a> Field<'a> {
         let kind = Kind::Text {
             value,
             secure: false,
-            reveal: None,
+            accessory: None,
+        };
+        Self { label, kind }
+    }
+
+    /// A path field with a "Choose…" button.
+    pub fn path(label: &'a str, value: &'a str, action: Sel) -> Self {
+        let kind = Kind::Text {
+            value,
+            secure: false,
+            accessory: Some(Accessory::Choose(action)),
         };
         Self { label, kind }
     }
@@ -91,17 +110,17 @@ impl<'a> Field<'a> {
         let kind = Kind::Text {
             value: "",
             secure: true,
-            reveal: None,
+            accessory: None,
         };
         Self { label, kind }
     }
 
     /// A secret field with an eye button, for long passwords that are easy to mistype.
-    pub fn revealable(label: &'a str, action: Sel) -> Self {
+    pub fn revealable(label: &'a str, value: &'a str, action: Sel) -> Self {
         let kind = Kind::Text {
-            value: "",
+            value,
             secure: true,
-            reveal: Some(action),
+            accessory: Some(Accessory::Reveal(action)),
         };
         Self { label, kind }
     }
@@ -110,6 +129,13 @@ impl<'a> Field<'a> {
         Self {
             label,
             kind: Kind::Choice { options, selected },
+        }
+    }
+
+    pub fn check(label: &'a str, title: &'a str) -> Self {
+        Self {
+            label,
+            kind: Kind::Check { title },
         }
     }
 }
@@ -133,6 +159,7 @@ enum Control {
         eye: Option<Retained<NSButton>>,
     },
     Choice(Retained<NSPopUpButton>),
+    Check(Retained<NSButton>),
 }
 
 pub struct Form {
@@ -142,7 +169,7 @@ pub struct Form {
 
 impl Form {
     /// Reads every field in order, then clears the text fields, so typed secrets do not linger.
-    /// A choice field yields its selected option.
+    /// A choice field yields its selected option, and a checked box its title.
     pub fn take_values(&self) -> Vec<zeroize::Zeroizing<String>> {
         self.controls
             .iter()
@@ -162,6 +189,13 @@ impl Form {
                         .map(|t| t.to_string())
                         .unwrap_or_default(),
                 ),
+                Control::Check(button) => {
+                    zeroize::Zeroizing::new(if button.state() == NSControlStateValueOn {
+                        button.title().to_string()
+                    } else {
+                        String::new()
+                    })
+                }
             })
             .collect()
     }
@@ -188,6 +222,13 @@ impl Form {
         to.setHidden(false);
         self.panel.makeFirstResponder(Some(to));
         eye.setImage(eye_image(!showing).as_deref());
+    }
+
+    /// Replaces the text of text field `index`.
+    pub fn set_text(&self, index: usize, value: &str) {
+        if let Some(Control::Text { field, .. }) = self.controls.get(index) {
+            field.setStringValue(&NSString::from_str(value));
+        }
     }
 
     pub fn close(&self) {
@@ -260,13 +301,22 @@ pub fn form(
             Kind::Text {
                 value,
                 secure,
-                reveal,
+                accessory,
             } => {
-                let eye_space = if reveal.is_some() { EYE + 4.0 } else { 0.0 };
+                let side_width = match accessory {
+                    Some(Accessory::Reveal(_)) => EYE,
+                    Some(Accessory::Choose(_)) => CHOOSE,
+                    None => 0.0,
+                };
+                let side_space = if accessory.is_some() {
+                    side_width + 4.0
+                } else {
+                    0.0
+                };
                 let frame = rect(
                     MARGIN + 116.0,
                     top,
-                    WIDTH - 2.0 * MARGIN - 116.0 - eye_space,
+                    WIDTH - 2.0 * MARGIN - 116.0 - side_space,
                     24.0,
                 );
                 let text_field: Retained<NSTextField> = if *secure {
@@ -280,24 +330,32 @@ pub fn form(
                 text_field.setStringValue(&NSString::from_str(value));
                 content.addSubview(&text_field);
                 first_text.get_or_insert_with(|| text_field.clone());
-                let (plain, eye) = match reveal {
-                    Some(action) => {
+                let side = |title: &NSString, action: Sel| {
+                    let button = unsafe {
+                        NSButton::buttonWithTitle_target_action(
+                            title,
+                            Some(target),
+                            Some(action),
+                            mtm,
+                        )
+                    };
+                    button.setTag(index as isize);
+                    button.setFrame(rect(WIDTH - MARGIN - side_width, top, side_width, 24.0));
+                    content.addSubview(&button);
+                    button
+                };
+                let (plain, eye) = match accessory {
+                    Some(Accessory::Choose(action)) => {
+                        side(ns_string!("Choose…"), *action);
+                        (None, None)
+                    }
+                    Some(Accessory::Reveal(action)) => {
                         let plain = NSTextField::initWithFrame(NSTextField::alloc(mtm), frame);
                         plain.setHidden(true);
                         content.addSubview(&plain);
-                        let eye = unsafe {
-                            NSButton::buttonWithTitle_target_action(
-                                ns_string!(""),
-                                Some(target),
-                                Some(*action),
-                                mtm,
-                            )
-                        };
+                        let eye = side(ns_string!(""), *action);
                         eye.setBordered(false);
                         eye.setImage(eye_image(false).as_deref());
-                        eye.setTag(index as isize);
-                        eye.setFrame(rect(WIDTH - MARGIN - EYE, top, EYE, 24.0));
-                        content.addSubview(&eye);
                         (Some(plain), Some(eye))
                     }
                     None => (None, None),
@@ -326,6 +384,24 @@ pub fn form(
                 content.addSubview(&popup);
                 Control::Choice(popup)
             }
+            Kind::Check { title } => {
+                let button = unsafe {
+                    NSButton::checkboxWithTitle_target_action(
+                        &NSString::from_str(title),
+                        None,
+                        None,
+                        mtm,
+                    )
+                };
+                button.setFrame(rect(
+                    MARGIN + 116.0,
+                    top,
+                    WIDTH - 2.0 * MARGIN - 116.0,
+                    24.0,
+                ));
+                content.addSubview(&button);
+                Control::Check(button)
+            }
         };
         controls.push(control);
         top -= 8.0;
@@ -333,7 +409,6 @@ pub fn form(
 
     let mut right = WIDTH - MARGIN + 6.0;
     for button in buttons {
-        right -= 96.0;
         let control = unsafe {
             NSButton::buttonWithTitle_target_action(
                 &NSString::from_str(button.title),
@@ -342,7 +417,9 @@ pub fn form(
                 mtm,
             )
         };
-        control.setFrame(rect(right, 12.0, 90.0, 32.0));
+        let width = control.fittingSize().width.max(90.0);
+        right -= width + 6.0;
+        control.setFrame(rect(right, 12.0, width, 32.0));
         control.setKeyEquivalent(match button.key {
             Key::Return => ns_string!("\r"),
             Key::Escape => ns_string!("\u{1b}"),

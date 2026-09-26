@@ -89,7 +89,7 @@
   <h2>Details</h2>
   <ul class="facts">
     <li>Works with any FIDO2 key that supports hmac-secret and has a PIN, for example YubiKey, Token2, or Google Titan.</li>
-    <li>Enroll a backup key of any brand. With several keys plugged in, touch the one to use.</li>
+    <li>Enroll a backup key of any brand. With several keys plugged in, touch the one to use. This needs CTAP 2.1. With older keys, plug in only one.</li>
     <li>Stores one password per database file, plus an optional catch-all.</li>
     <li>Never uses the clipboard, unless you turn on "Copy Password".</li>
     <li>Fills in the password only after it checks KeePassXC's code signature.</li>
@@ -98,12 +98,13 @@
   </ul>
 
   <h2>Install</h2>
-  <p>You need macOS 13 or later on a Mac with Apple silicon, and KeePassXC 2.7 or later. Download the <code>.dmg</code> or <code>.pkg</code> from the latest release. The app is self-signed, so the first time, right-click it and choose Open. Then choose "Set Up…" in its menu.</p>
+  <p>You need macOS 13 or later on a Mac with Apple silicon, and KeePassXC 2.7 or later. Download the <code>.dmg</code> or <code>.pkg</code> from the latest release. The app is self-signed, not notarized by Apple, so macOS can refuse to open it the first time. If it does, click Done, open System Settings &gt; Privacy &amp; Security, and click "Open Anyway" under Security. Confirm with your password, then open it again. Then choose "Set Up…" in its menu.</p>
 
   <h2>Verify a download</h2>
   <p>GitHub Actions builds every release from its tag and signs SLSA Build Level 3 provenance for it:</p>
   <pre><code>gh attestation verify fido2kpxc-&lt;version&gt;.dmg --repo BJMCox/fido2kpxc \
   --signer-workflow BJMCox/fido2kpxc/.github/workflows/build.yml</code></pre>
+  <p>The release notes link each installer's VirusTotal scan.</p>
 
   <footer>
     Copyright 2026 Jessica Cox. <a href="https://github.com/BJMCox/fido2kpxc">Source on GitHub</a>.

@@ -79,7 +79,7 @@ fn remove_key_keeps_the_other_keys_working() {
         .add_key(&unlock(1, 10), "third", &unlock(3, 30))
         .unwrap();
     vault
-        .remove_key("backup", &[unlock(1, 10), unlock(3, 30)])
+        .remove_keys(&["backup"], &[unlock(1, 10), unlock(3, 30)])
         .unwrap();
     assert!(vault.open(&unlock(2, 20), None).is_err());
     assert_eq!(open(&vault, &unlock(1, 10), "pdb.kdbx"), b"hunter2");
@@ -90,7 +90,7 @@ fn remove_key_keeps_the_other_keys_working() {
 fn removed_key_cannot_read_vaults_written_after_removal() {
     let mut vault = two_key_vault(b"hunter2");
     let old_copy: Vault = toml::from_str(&toml::to_string(&vault).unwrap()).unwrap();
-    vault.remove_key("backup", &[unlock(1, 10)]).unwrap();
+    vault.remove_keys(&["backup"], &[unlock(1, 10)]).unwrap();
     vault.set_secret(&unlock(1, 10), ANY, b"rotated").unwrap();
     // The removed key still opens its old copy, so it knows the old data key.
     let old_key = old_copy.unwrap(&unlock(2, 20)).unwrap();
@@ -109,8 +109,59 @@ fn removed_key_cannot_read_vaults_written_after_removal() {
 #[test]
 fn remove_key_refuses_the_last_key() {
     let mut vault = Vault::create([7; 32], "primary", &unlock(1, 10), ANY, b"hunter2").unwrap();
-    assert!(vault.remove_key("primary", &[]).is_err());
+    assert!(vault.remove_keys(&["primary"], &[]).is_err());
     assert_eq!(open(&vault, &unlock(1, 10), "pdb.kdbx"), b"hunter2");
+}
+
+#[test]
+fn two_lost_keys_are_removed_at_once_with_only_the_kept_keys() {
+    let mut vault = two_key_vault(b"hunter2");
+    for (label, id) in [("third", 3), ("fourth", 4)] {
+        vault
+            .add_key(&unlock(1, 10), label, &unlock(id, id * 10))
+            .unwrap();
+    }
+    vault
+        .remove_keys(&["backup", "third"], &[unlock(1, 10), unlock(4, 40)])
+        .unwrap();
+    assert!(vault.open(&unlock(2, 20), None).is_err());
+    assert!(vault.open(&unlock(3, 30), None).is_err());
+    assert_eq!(open(&vault, &unlock(1, 10), "pdb.kdbx"), b"hunter2");
+    assert_eq!(open(&vault, &unlock(4, 40), "pdb.kdbx"), b"hunter2");
+    assert_eq!(vault.kept_keys(&[]).unwrap().len(), 2);
+}
+
+#[test]
+fn removing_every_key_fails_and_changes_nothing() {
+    let mut vault = two_key_vault(b"hunter2");
+    assert!(vault.remove_keys(&["primary", "backup"], &[]).is_err());
+    assert_eq!(open(&vault, &unlock(2, 20), "pdb.kdbx"), b"hunter2");
+}
+
+#[test]
+fn an_unknown_label_fails_and_changes_nothing() {
+    let mut vault = two_key_vault(b"hunter2");
+    assert!(
+        vault
+            .remove_keys(&["backup", "spare"], &[unlock(1, 10)])
+            .is_err()
+    );
+    assert_eq!(open(&vault, &unlock(2, 20), "pdb.kdbx"), b"hunter2");
+}
+
+#[test]
+fn kept_keys_lists_the_keys_that_need_a_touch() {
+    let mut vault = two_key_vault(b"hunter2");
+    vault
+        .add_key(&unlock(1, 10), "third", &unlock(3, 30))
+        .unwrap();
+    let kept: Vec<&str> = vault
+        .kept_keys(&["backup"])
+        .unwrap()
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
+    assert_eq!(kept, ["primary", "third"]);
 }
 
 #[test]
@@ -240,4 +291,95 @@ fn check_lists_a_password_that_fails_to_open() {
 fn check_refuses_a_key_that_is_not_enrolled() {
     let vault = two_key_vault(b"hunter2");
     assert!(vault.check(&unlock(3, 30)).is_err());
+}
+
+#[test]
+fn a_vault_from_a_newer_version_asks_for_an_update() {
+    let error = Vault::parse("version = 3\n").err().unwrap();
+    assert!(
+        format!("{error:#}").contains("Update fido2kpxc on this Mac"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn deserializing_an_invalid_vault_fails() {
+    let text = "version = 2\nsalt = \"\"\nkeys = []\nsecrets = []\n";
+    assert!(toml::from_str::<Vault>(text).is_err());
+}
+
+#[test]
+fn duplicate_labels_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.toml");
+    two_key_vault(b"pw").save(&path, true).unwrap();
+    let text = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("\"backup\"", "\"primary\"");
+    std::fs::write(&path, text).unwrap();
+    assert!(Vault::load(&path).is_err());
+}
+
+#[test]
+fn duplicate_credential_ids_are_refused() {
+    // Two entries for the same key, as a hand edit could leave.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.toml");
+    two_key_vault(b"pw").save(&path, true).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let (id1, id2) = (STANDARD.encode([1u8; 16]), STANDARD.encode([2u8; 16]));
+    std::fs::write(&path, text.replace(&id2, &id1)).unwrap();
+    assert!(Vault::load(&path).is_err());
+}
+
+#[test]
+fn a_vault_above_one_mib_is_refused_before_parsing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.toml");
+    std::fs::write(&path, vec![b'#'; MAX_VAULT_BYTES as usize + 1]).unwrap();
+    assert!(Vault::load(&path).is_err());
+}
+
+#[test]
+fn a_save_after_another_writers_save_fails_and_keeps_their_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.toml");
+    two_key_vault(b"old").save(&path, true).unwrap();
+    let mut mine = Vault::load(&path).unwrap();
+    let mut theirs = Vault::load(&path).unwrap();
+    theirs.remove_keys(&["backup"], &[unlock(1, 10)]).unwrap();
+    theirs.save(&path, false).unwrap();
+    mine.set_secret(&unlock(2, 20), "new.kdbx", b"new").unwrap();
+    assert!(mine.save(&path, false).is_err());
+    // The removed backup key still opens nothing.
+    assert!(
+        Vault::load(&path)
+            .unwrap()
+            .open(&unlock(2, 20), None)
+            .is_err()
+    );
+}
+
+#[test]
+fn the_same_value_saves_twice() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.toml");
+    two_key_vault(b"pw").save(&path, true).unwrap();
+    let mut vault = Vault::load(&path).unwrap();
+    vault.set_secret(&unlock(1, 10), "a.kdbx", b"a").unwrap();
+    vault.save(&path, false).unwrap();
+    vault.set_secret(&unlock(1, 10), "b.kdbx", b"b").unwrap();
+    vault.save(&path, false).unwrap();
+    assert_eq!(
+        Vault::load(&path).unwrap().databases(),
+        ["*", "a.kdbx", "b.kdbx"]
+    );
+}
+
+#[test]
+fn a_vault_of_another_version_does_not_deserialize() {
+    let text = toml::to_string(&two_key_vault(b"hunter2"))
+        .unwrap()
+        .replace("version = 2", "version = 7");
+    assert!(toml::from_str::<Vault>(&text).is_err());
 }
