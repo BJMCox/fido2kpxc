@@ -1,0 +1,73 @@
+/* The Keybar theme, shared by every Keybar site. Keep the copies identical. */
+:root {
+  --bg: #232937;
+  --panel: #2c3344;
+  --text: #f5f5f7;
+  --muted: #aab1c3;
+  --gold: #f0b43a;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 17px/1.55 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+}
+main { max-width: 860px; margin: 0 auto; padding: 40px 16px 64px; }
+a { color: var(--gold); }
+header { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; }
+header img { width: 132px; height: 132px; }
+h1 { font-size: 56px; line-height: 1; margin: 0 0 10px; letter-spacing: -1px; }
+.tagline { color: var(--muted); font-size: 22px; margin: 0; }
+.actions { display: flex; gap: 12px; flex-wrap: wrap; margin: 32px 0 48px; }
+.button {
+  display: inline-block; padding: 11px 20px; border-radius: 10px;
+  font-weight: 600; text-decoration: none; border: 1px solid var(--gold);
+}
+.button.primary { background: var(--gold); color: var(--bg); }
+h2 { font-size: 24px; margin: 48px 0 16px; }
+ol.steps { counter-reset: step; list-style: none; padding: 0; display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+ol.steps li { counter-increment: step; background: var(--panel); border-radius: 12px; padding: 18px; }
+ol.steps li::before { content: counter(step); display: block; color: var(--gold);
+  font-weight: 700; font-size: 28px; margin-bottom: 4px; }
+ul.facts { padding-left: 20px; }
+ul.facts li { margin-bottom: 8px; }
+ul.facts li::marker { color: var(--gold); }
+code { font: 15px ui-monospace, Menlo, monospace; background: var(--panel); padding: 2px 6px; border-radius: 6px; }
+pre { position: relative; background: var(--panel); padding: 14px 16px; padding-right: 84px;
+  border-radius: 10px; overflow-x: auto; }
+pre .copy { position: absolute; top: 8px; right: 8px; font: 600 13px -apple-system, sans-serif;
+  padding: 5px 10px; border-radius: 7px; border: 1px solid var(--gold); background: var(--bg);
+  color: var(--gold); cursor: pointer; }
+pre .copy:hover { background: var(--gold); color: var(--bg); }
+pre code { background: none; padding: 0; }
+dialog::backdrop { background: rgb(0 0 0 / 0.55); }
+footer { color: var(--muted); font-size: 14px; margin-top: 56px; }
+@media (max-width: 520px) {
+  h1 { font-size: 42px; }
+  header img { width: 96px; height: 96px; }
+}
+
+/* The Keybar bar, shared by every Keybar site. */
+.keybar { position: sticky; top: 0; z-index: 10; background: rgb(35 41 55 / 0.92);
+  backdrop-filter: blur(8px); border-bottom: 1px solid #3a4256; }
+.keybar nav { max-width: 860px; margin: 0 auto; padding: 0 16px; display: flex; align-items: center;
+  gap: 6px; min-height: 52px; flex-wrap: wrap; }
+.keybar .name { font-weight: 700; margin-right: auto; padding: 8px 0; letter-spacing: -0.2px; }
+.keybar .name span { color: var(--gold); }
+.keybar .name small { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 6px; }
+.keybar .app { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 9px;
+  color: var(--muted); text-decoration: none; font-weight: 600; font-size: 15px; }
+.keybar .app svg { width: 13px; height: 16px; flex: none; }
+.keybar .app small { font-weight: 400; font-size: 13px; }
+.keybar .app:hover { color: var(--text); background: var(--panel); }
+.keybar .app[aria-current="page"] { color: var(--gold); background: var(--panel); }
+.keybar .gh { color: var(--muted); padding: 7px 4px 7px 10px; display: flex; }
+.keybar .gh:hover { color: var(--text); }
+.keybar .gh svg { width: 20px; height: 20px; }
+@media (max-width: 520px) {
+  .keybar .name { width: 100%; padding-bottom: 0; }
+  .keybar .app small { display: none; }
+  .keybar nav { padding-bottom: 6px; }
+}

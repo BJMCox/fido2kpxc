@@ -10,59 +10,18 @@
 <meta property="og:image" content="https://raw.githubusercontent.com/BJMCox/fido2kpxc/main/assets/social-preview.png">
 <meta name="color-scheme" content="dark">
 <link rel="icon" href="logo.svg" type="image/svg+xml">
-<style>
-  :root {
-    --bg: #232937;
-    --panel: #2c3344;
-    --text: #f5f5f7;
-    --muted: #aab1c3;
-    --gold: #f0b43a;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font: 17px/1.55 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
-  }
-  main { max-width: 860px; margin: 0 auto; padding: 48px 16px 64px; }
-  a { color: var(--gold); }
-  header { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; }
-  header img { width: 132px; height: 132px; }
-  h1 { font-size: 56px; line-height: 1; margin: 0 0 10px; letter-spacing: -1px; }
-  .tagline { color: var(--muted); font-size: 22px; margin: 0; }
-  .actions { display: flex; gap: 12px; flex-wrap: wrap; margin: 32px 0 48px; }
-  .button {
-    display: inline-block; padding: 11px 20px; border-radius: 10px;
-    font-weight: 600; text-decoration: none; border: 1px solid var(--gold);
-  }
-  .button.primary { background: var(--gold); color: var(--bg); }
-  h2 { font-size: 24px; margin: 48px 0 16px; }
-  ol.steps { counter-reset: step; list-style: none; padding: 0; display: grid; gap: 12px;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
-  ol.steps li { counter-increment: step; background: var(--panel); border-radius: 12px; padding: 18px; }
-  ol.steps li::before { content: counter(step); display: block; color: var(--gold);
-    font-weight: 700; font-size: 28px; margin-bottom: 4px; }
-  ul.facts { padding-left: 20px; }
-  ul.facts li { margin-bottom: 8px; }
-  ul.facts li::marker { color: var(--gold); }
-  code { font: 15px ui-monospace, Menlo, monospace; background: var(--panel); padding: 2px 6px; border-radius: 6px; }
-  pre { position: relative; background: var(--panel); padding: 14px 16px; padding-right: 84px;
-    border-radius: 10px; overflow-x: auto; }
-  pre .copy { position: absolute; top: 8px; right: 8px; font: 600 13px -apple-system, sans-serif;
-    padding: 5px 10px; border-radius: 7px; border: 1px solid var(--gold); background: var(--bg);
-    color: var(--gold); cursor: pointer; }
-  pre .copy:hover { background: var(--gold); color: var(--bg); }
-  pre code { background: none; padding: 0; }
-  dialog::backdrop { background: rgb(0 0 0 / 0.55); }
-  footer { color: var(--muted); font-size: 14px; margin-top: 56px; }
-  @media (max-width: 520px) {
-    h1 { font-size: 42px; }
-    header img { width: 96px; height: 96px; }
-  }
-</style>
+<link rel="stylesheet" href="keybar.css">
 </head>
 <body>
+<!-- The Keybar bar. Keep it the same on every Keybar site, apart from aria-current. -->
+<div class="keybar">
+  <nav aria-label="Keybar">
+    <span class="name"><span>Key</span>bar<small>for macOS</small></span>
+    <a class="app" href="https://bjmcox.github.io/fido2kpxc/" aria-current="page"><svg viewBox="0 0 20 24" aria-hidden="true"><ellipse cx="10" cy="3.5" rx="9.7" ry="3.2" fill="currentColor"/> <path fill="currentColor" fill-rule="evenodd" d="M0.3 5.1A9.7 3.2 0 0 0 19.7 5.1V20.5A9.7 3.2 0 0 1 0.3 20.5Z M9.075 14.3H16.6A0.9 0.9 0 0 1 17.5 15.2V17.2A0.9 0.9 0 0 1 15.7 17.2V16.1H14.9V17.8A0.9 0.9 0 0 1 13.1 17.8V16.1H9.075A3.3 3.3 0 1 1 9.075 14.3Z M4.4 15.2a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0Z"/></svg>fido2kpxc <small>Unlock KeePassXC</small></a>
+    <a class="app" href="https://bjmcox.github.io/fido2lock/"><svg viewBox="0 0 20 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" d="M4.7 10.5V7.8a5.3 5.3 0 0 1 10.6 0V10.5"/> <path fill="currentColor" fill-rule="evenodd" d="M3.5 10h13a3.2 3.2 0 0 1 3.2 3.2v7.3a3.2 3.2 0 0 1 -3.2 3.2h-13a3.2 3.2 0 0 1 -3.2 -3.2v-7.3a3.2 3.2 0 0 1 3.2 -3.2Z M10 12.9L14.8 18.1H5.2Z M5.2 19.6h9.6v2.2H5.2Z"/></svg>fido2lock <small>Lock your Mac</small></a>
+    <a class="gh" href="https://github.com/BJMCox/fido2kpxc" aria-label="Source on GitHub"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </nav>
+</div>
 <main>
   <header>
     <img src="logo.svg" alt="">
