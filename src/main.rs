@@ -1,10 +1,11 @@
 mod config;
-mod fido;
 mod kpxc;
 mod ops;
-mod panels;
 mod ui;
-mod vault;
+
+// The shared kit's modules, at the paths the other modules already use.
+use fido2kit::{fido, vault};
+use fido2kit_mac::panels;
 
 use std::io::BufRead;
 
@@ -12,7 +13,7 @@ use anyhow::{Context, Result, bail, ensure};
 use zeroize::Zeroizing;
 
 use config::Config;
-use vault::{ANY, Vault};
+use vault::ANY;
 
 const USAGE: &str = "usage: fido2kpxc [enroll --label NAME [--database FILE] | enroll-key --label NAME | remove-key --label NAME [--label NAME ...] | check-key | set-secret [--database FILE] | remove-secret --database FILE | list-keys | list-databases | completions zsh | help]";
 const HELP: &str = "fido2kpxc: unlock KeePassXC with a FIDO2 security key
@@ -158,7 +159,7 @@ fn check_key() -> Result<()> {
 
 fn list_keys() -> Result<()> {
     let config = Config::load(&Config::path()?)?;
-    let vault = Vault::load(&config.vault)?;
+    let vault = ops::load_vault(&config)?;
     for (label, _) in vault.entries() {
         println!("{label}");
     }
@@ -173,9 +174,9 @@ fn list_keys() -> Result<()> {
 }
 
 fn list_databases() -> Result<()> {
-    let vault = Vault::load(&Config::load(&Config::path()?)?.vault)?;
+    let vault = ops::load_vault(&Config::load(&Config::path()?)?)?;
     // Raw names, so shell completion can offer them. `*` is the catch-all entry.
-    for database in vault.databases() {
+    for database in vault.names() {
         println!("{database}");
     }
     Ok(())
@@ -226,7 +227,7 @@ fn with_pin<T>(prompt: &str, touch: &str, op: impl Fn(&str) -> Result<T>) -> Res
         let pin = hidden(prompt)?;
         println!("{touch}");
         match op(&pin) {
-            Err(error) if fido::wrong_pin(&error) => eprintln!("{error:#}"),
+            Err(error) if fido::retry_pin(&error) => eprintln!("{error:#}"),
             other => return other,
         }
     }

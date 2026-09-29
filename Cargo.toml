@@ -4,7 +4,7 @@ default-members = ["."]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.2"
+version = "0.3.0"
 license = "Apache-2.0"
 authors = ["Jessica Cox <jmcox@posteo.de>"]
 edition = "2024"
@@ -28,10 +28,8 @@ doctest = false
 
 [dependencies]
 anyhow = "1"
-base64 = "0.23"
-chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
-ctap-hid-fido2 = "3.6"
-getrandom = "0.4"
+fido2kit = { path = "../fido2kit/fido2kit" }
+fido2kit-mac = { path = "../fido2kit/fido2kit-mac" }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "objc2-core-foundation", "NSApplication", "NSButton", "NSCell", "NSGraphics", "NSLayoutConstraint", "NSControl", "NSEvent", "NSImage", "NSImageView", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSPopUpButton", "NSResponder", "NSRunningApplication", "NSSavePanel", "NSSecureTextField", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSTextField", "NSView", "NSWindow", "NSWorkspace"] }
 objc2-application-services = { version = "0.3", default-features = false, features = ["std", "libc", "HIServices", "AXError", "AXUIElement"] }

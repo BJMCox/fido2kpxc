@@ -337,14 +337,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
-name = "fido2kpxc"
-version = "0.2.2"
+name = "fido2kit"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
  "chacha20poly1305",
  "ctap-hid-fido2",
  "getrandom 0.4.3",
+ "serde",
+ "tempfile",
+ "toml",
+ "unicode-normalization",
+ "zeroize",
+]
+
+[[package]]
+name = "fido2kit-mac"
+version = "0.1.0"
+dependencies = [
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "zeroize",
+]
+
+[[package]]
+name = "fido2kpxc"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "fido2kit",
+ "fido2kit-mac",
  "objc2",
  "objc2-app-kit",
  "objc2-application-services",
@@ -953,6 +977,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyvec"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
+
+[[package]]
 name = "toml"
 version = "1.1.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1002,6 +1032,15 @@ name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-width"
@@ -1144,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
 ]

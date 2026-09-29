@@ -118,6 +118,7 @@ fn bundle() -> Result<PathBuf> {
     run(Command::new("cargo").current_dir(&root).args([
         "build",
         "--release",
+        "--locked",
         "--package",
         "fido2kpxc",
     ]))?;

@@ -324,7 +324,7 @@ define_class!(
             let (sender, result) = mpsc::channel();
             let database = asking.target.database();
             self.ivars().borrow().worker.run(move || {
-                let secret = fido::derive(&key, &pin, &vault.salt(), &vault.cred_ids())
+                let secret = fido::derive(ops::APP, &key, &pin, &vault.salt(), &vault.cred_ids())
                     .and_then(|unlock| {
                         vault
                             .open(&unlock, Some(&database))
@@ -819,7 +819,7 @@ impl Controller {
                     "Autofill: {:?}, Copy Password: {}, clear after {} s",
                     config.autofill, config.copy_password, config.clear_seconds
                 ));
-                match Vault::load(&config.vault) {
+                match ops::load_vault(&config) {
                     Err(error) => lines.push(format!("Vault: {error:#}")),
                     Ok(vault) => {
                         let keys: Vec<&str> = vault
@@ -829,10 +829,7 @@ impl Controller {
                             .collect();
                         lines.push(format!("Vault: {} (loads)", config.vault.display()));
                         lines.push(format!("Keys: {}", keys.join(", ")));
-                        lines.push(format!(
-                            "Stored passwords: {}",
-                            vault.databases().join(", ")
-                        ));
+                        lines.push(format!("Stored passwords: {}", vault.names().join(", ")));
                     }
                 }
                 let conflicts = config.conflicts();
@@ -966,7 +963,7 @@ impl Controller {
                 return self.alert(&format!("{error:#}\n\nChoose Settings… first."));
             }
         };
-        let vault = config.as_ref().map(|c| Vault::load(&c.vault));
+        let vault = config.as_ref().map(ops::load_vault);
         if !matches!(step, Step::Create { .. } | Step::Settings { .. })
             && let Some(Err(error)) = &vault
         {
@@ -1033,7 +1030,7 @@ impl Controller {
                 let database = Field::path("Database file", typed(0), sel!(chooseDatabase:));
                 let stored = vault
                     .as_ref()
-                    .map(|v| v.databases().into_iter().map(ops::describe).collect::<Vec<_>>().join(", "))
+                    .map(|v| v.names().into_iter().map(ops::describe).collect::<Vec<_>>().join(", "))
                     .unwrap_or_default();
                 let text = format!(
                     "Enter the database file name, such as pdb.kdbx, and its password, then touch your security key. Leave the name blank for any other database. Passwords stored now: {stored}."
@@ -1041,7 +1038,7 @@ impl Controller {
                 (text, vec![database, password(1), repeat(2), pin], "Save")
             }
             Step::RemovePassword => {
-                let stored: Vec<&str> = vault.as_ref().map(Vault::databases).unwrap_or_default();
+                let stored: Vec<&str> = vault.as_ref().map(Vault::names).unwrap_or_default();
                 let fields = stored
                     .iter()
                     .enumerate()
@@ -1255,9 +1252,9 @@ impl Controller {
             }
             Step::Settings { .. } | Step::Swap { .. } => {}
             Step::RemovePassword => {
-                let names: Vec<String> = match Vault::load(&config.vault) {
+                let names: Vec<String> = match ops::load_vault(&config) {
                     Ok(vault) => vault
-                        .databases()
+                        .names()
                         .into_iter()
                         .filter(|name| values.iter().any(|v| v.as_str() == ops::describe(name)))
                         .map(str::to_owned)
@@ -1364,7 +1361,7 @@ impl Controller {
     /// other failure may need another key, so a message offers Retry, which chooses the key again.
     fn step_failed(&self, step: Step, error: &anyhow::Error) {
         let text = format!("{error:#}");
-        if fido::wrong_pin(error) {
+        if fido::retry_pin(error) {
             self.open_setup(step, Some(&text));
         } else {
             // A key that is not the one asked for may still be plugged in, so Remove Security
@@ -1806,7 +1803,7 @@ impl Controller {
     /// One "Copy Password" item for a single password, or a submenu with one item per database.
     fn fill_copy_menu(&self, item: &NSMenuItem) {
         let databases: Vec<String> = load()
-            .map(|(_, vault)| vault.databases().into_iter().map(str::to_owned).collect())
+            .map(|(_, vault)| vault.names().into_iter().map(str::to_owned).collect())
             .unwrap_or_default();
         let entry = |target: &NSMenuItem, database: &str| unsafe {
             target.setTarget(Some(self));
@@ -2009,7 +2006,7 @@ fn load_vault(config: &Config) -> Result<Vault> {
         "No vault at {}. Run `fido2kpxc enroll`.",
         config.vault.display()
     );
-    Vault::load(&config.vault)
+    ops::load_vault(config)
 }
 
 /// The vault folder, when the config at `path` reads, and the config, when the vault loads too.

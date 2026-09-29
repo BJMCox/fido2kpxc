@@ -7,6 +7,14 @@ use crate::config::Config;
 use crate::fido::{self, FidoError, Key};
 use crate::vault::{ANY, Check, Unlock, Vault};
 
+/// fido2kpxc's relying-party ID and vault domain. Every enrolled key and vault depends on it.
+pub const APP: fido2kit::App = fido2kit::App::new("fido2kpxc");
+
+/// The configured vault.
+pub fn load_vault(config: &Config) -> Result<Vault> {
+    Vault::load(APP, &config.vault)
+}
+
 /// The security key to use: the only one plugged in, or the one the user touches among several.
 pub fn choose_key() -> Result<Key> {
     Ok(fido::select(fido::devices())?)
@@ -23,8 +31,8 @@ pub fn create(
 ) -> Result<()> {
     check_new(config)?;
     let salt = Vault::new_salt()?;
-    let unlock = fido::enroll(key, pin, &salt, &[])?;
-    Vault::create(salt, label, &unlock, database, secret)?.save(&config.vault, true)
+    let unlock = fido::enroll(APP, key, pin, &salt, &[])?;
+    Vault::create(APP, salt, label, &unlock, database, secret)?.save(&config.vault, true)
 }
 
 /// Fails before any touch when `create` could not succeed.
@@ -40,8 +48,14 @@ pub fn check_new(config: &Config) -> Result<()> {
 
 /// Derives the output of whichever enrolled key is inserted. Needs one touch.
 pub fn derive(config: &Config, key: &Key, pin: &str) -> Result<Unlock> {
-    let vault = Vault::load(&config.vault)?;
-    Ok(fido::derive(key, pin, &vault.salt(), &vault.cred_ids())?)
+    let vault = load_vault(config)?;
+    Ok(fido::derive(
+        APP,
+        key,
+        pin,
+        &vault.salt(),
+        &vault.cred_ids(),
+    )?)
 }
 
 /// Derives the output of whichever key in `left` the inserted key is. Needs one touch.
@@ -51,9 +65,9 @@ pub fn derive_needed(
     left: &[(String, Vec<u8>)],
     pin: &str,
 ) -> Result<Unlock> {
-    let vault = Vault::load(&config.vault)?;
+    let vault = load_vault(config)?;
     let cred_ids: Vec<&[u8]> = left.iter().map(|(_, id)| id.as_slice()).collect();
-    match fido::derive(key, pin, &vault.salt(), &cred_ids) {
+    match fido::derive(APP, key, pin, &vault.salt(), &cred_ids) {
         Err(FidoError::NotEnrolled) => bail!("This key is not {}.", needed(left)),
         other => Ok(other?),
     }
@@ -75,20 +89,20 @@ pub fn needed(left: &[(String, Vec<u8>)]) -> String {
 
 /// Enrolls the inserted key as `label`, unlocking with `current`. Needs two touches.
 pub fn add_key(config: &Config, key: &Key, current: &Unlock, label: &str, pin: &str) -> Result<()> {
-    let mut vault = Vault::load(&config.vault)?;
+    let mut vault = load_vault(config)?;
     // Checked before the touches, which vault.add_key would only reach afterwards.
     ensure!(
         vault.entries().iter().all(|(l, _)| *l != label),
         "Label {label:?} already exists"
     );
-    let new = fido::enroll(key, pin, &vault.salt(), &vault.cred_ids())?;
+    let new = fido::enroll(APP, key, pin, &vault.salt(), &vault.cred_ids())?;
     vault.add_key(current, label, &new)?;
     vault.save(&config.vault, false)
 }
 
 /// Removes the keys in `labels` and moves every password to a new data key wrapped for `remaining`.
 pub fn remove_keys(config: &Config, labels: &[String], remaining: &[Unlock]) -> Result<()> {
-    let mut vault = Vault::load(&config.vault)?;
+    let mut vault = load_vault(config)?;
     vault.remove_keys(&as_strs(labels), remaining)?;
     vault.save(&config.vault, false)
 }
@@ -96,7 +110,7 @@ pub fn remove_keys(config: &Config, labels: &[String], remaining: &[Unlock]) -> 
 /// Labels and credential IDs of every key that stays after removing `labels`. `remove_keys`
 /// needs each of them touched.
 pub fn keys_to_touch(config: &Config, labels: &[String]) -> Result<Vec<(String, Vec<u8>)>> {
-    let vault = Vault::load(&config.vault)?;
+    let vault = load_vault(config)?;
     Ok(vault
         .kept_keys(&as_strs(labels))?
         .into_iter()
@@ -128,8 +142,8 @@ pub fn set_secret(
     secret: &[u8],
     pin: &str,
 ) -> Result<()> {
-    let mut vault = Vault::load(&config.vault)?;
-    let unlock = fido::derive(key, pin, &vault.salt(), &vault.cred_ids())?;
+    let mut vault = load_vault(config)?;
+    let unlock = fido::derive(APP, key, pin, &vault.salt(), &vault.cred_ids())?;
     vault.set_secret(&unlock, database, secret)?;
     vault.save(&config.vault, false)
 }
@@ -137,8 +151,8 @@ pub fn set_secret(
 /// Reports which enrolled key is inserted and whether it opens every stored password, which
 /// the second value tells scripts. Needs one touch and fills nothing.
 pub fn check_key(config: &Config, key: &Key, pin: &str) -> Result<(String, bool)> {
-    let vault = Vault::load(&config.vault)?;
-    let unlock = fido::derive(key, pin, &vault.salt(), &vault.cred_ids())?;
+    let vault = load_vault(config)?;
+    let unlock = fido::derive(APP, key, pin, &vault.salt(), &vault.cred_ids())?;
     let check = vault.check(&unlock)?;
     Ok((report(&check), check_ok(&check)))
 }
@@ -149,7 +163,7 @@ fn check_ok(check: &Check) -> bool {
 
 /// Removes the passwords for `names` in one save. The vault keeps at least one password.
 pub fn remove_secrets(config: &Config, names: &[String]) -> Result<()> {
-    let mut vault = Vault::load(&config.vault)?;
+    let mut vault = load_vault(config)?;
     for name in names {
         vault.remove_secret(name)?;
     }

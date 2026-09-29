@@ -88,7 +88,7 @@ fn three_passwords() -> (tempfile::TempDir, Config) {
         cred_id: vec![1; 16],
         output: zeroize::Zeroizing::new([9; 32]),
     };
-    let mut vault = Vault::create([7; 32], "primary", &one, ANY, b"any").unwrap();
+    let mut vault = Vault::create(APP, [7; 32], "primary", &one, ANY, b"any").unwrap();
     vault.set_secret(&one, "a.kdbx", b"a").unwrap();
     vault.set_secret(&one, "b.kdbx", b"b").unwrap();
     vault.save(&config.vault, true).unwrap();
@@ -99,7 +99,7 @@ fn three_passwords() -> (tempfile::TempDir, Config) {
 fn remove_secrets_removes_several_in_one_save() {
     let (_dir, config) = three_passwords();
     remove_secrets(&config, &["a.kdbx".into(), "b.kdbx".into()]).unwrap();
-    assert_eq!(Vault::load(&config.vault).unwrap().databases(), ["*"]);
+    assert_eq!(load_vault(&config).unwrap().names(), ["*"]);
 }
 
 #[test]
