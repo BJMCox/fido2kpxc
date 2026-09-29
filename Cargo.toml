@@ -31,7 +31,7 @@ anyhow = "1"
 fido2kit = { path = "../fido2kit/fido2kit" }
 fido2kit-mac = { path = "../fido2kit/fido2kit-mac" }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "objc2-core-foundation", "NSApplication", "NSButton", "NSCell", "NSGraphics", "NSLayoutConstraint", "NSControl", "NSEvent", "NSImage", "NSImageView", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSPopUpButton", "NSResponder", "NSRunningApplication", "NSSavePanel", "NSSecureTextField", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSTextField", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "objc2-core-foundation", "NSApplication", "NSButton", "NSCell", "NSGraphics", "NSControl", "NSEvent", "NSImage", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSSavePanel", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSTextField", "NSView", "NSWindow", "NSWorkspace"] }
 objc2-application-services = { version = "0.3", default-features = false, features = ["std", "libc", "HIServices", "AXError", "AXUIElement"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFBase", "CFDictionary", "CFNumber", "CFString"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSData", "NSDictionary", "NSEnumerator", "NSError", "NSGeometry", "NSNotification", "NSObject", "NSProcessInfo", "NSRunLoop", "NSString", "NSTimer", "NSURL", "NSUserDefaults", "NSValue"] }

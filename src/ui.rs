@@ -1996,11 +1996,11 @@ fn stamps(folder: Option<&Path>) -> [Stamp; 3] {
 
 fn load() -> Result<(Config, Vault)> {
     let config = Config::load(&Config::path()?)?;
-    let vault = load_vault(&config)?;
+    let vault = load_existing_vault(&config)?;
     Ok((config, vault))
 }
 
-fn load_vault(config: &Config) -> Result<Vault> {
+fn load_existing_vault(config: &Config) -> Result<Vault> {
     ensure!(
         config.vault.exists(),
         "No vault at {}. Run `fido2kpxc enroll`.",
@@ -2014,7 +2014,7 @@ fn load_health(path: Result<PathBuf>) -> (Option<PathBuf>, Result<Config, String
     let config = path.and_then(|path| Config::load(&path));
     let folder = config.as_ref().ok().map(|c| c.folder.clone());
     let health = config
-        .and_then(|config| load_vault(&config).map(|_| config))
+        .and_then(|config| load_existing_vault(&config).map(|_| config))
         .map_err(|e| format!("{e:#}"));
     (folder, health)
 }
