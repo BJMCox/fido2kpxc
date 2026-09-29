@@ -28,8 +28,8 @@ doctest = false
 
 [dependencies]
 anyhow = "1"
-fido2kit = { path = "../fido2kit/fido2kit" }
-fido2kit-mac = { path = "../fido2kit/fido2kit-mac" }
+fido2kit = { git = "https://github.com/BJMCox/fido2kit.git", rev = "291cb446dc188c7134cb3bd9f08f5f9dc3c0df1f" } # v0.1.0
+fido2kit-mac = { git = "https://github.com/BJMCox/fido2kit.git", rev = "291cb446dc188c7134cb3bd9f08f5f9dc3c0df1f" } # v0.1.0
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "objc2-core-foundation", "NSApplication", "NSButton", "NSCell", "NSGraphics", "NSControl", "NSEvent", "NSImage", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSSavePanel", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSTextField", "NSView", "NSWindow", "NSWorkspace"] }
 objc2-application-services = { version = "0.3", default-features = false, features = ["std", "libc", "HIServices", "AXError", "AXUIElement"] }

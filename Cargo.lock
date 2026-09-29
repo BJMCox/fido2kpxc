@@ -339,6 +339,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 [[package]]
 name = "fido2kit"
 version = "0.1.0"
+source = "git+https://github.com/BJMCox/fido2kit.git?rev=291cb446dc188c7134cb3bd9f08f5f9dc3c0df1f#291cb446dc188c7134cb3bd9f08f5f9dc3c0df1f"
 dependencies = [
  "anyhow",
  "base64",
@@ -355,6 +356,7 @@ dependencies = [
 [[package]]
 name = "fido2kit-mac"
 version = "0.1.0"
+source = "git+https://github.com/BJMCox/fido2kit.git?rev=291cb446dc188c7134cb3bd9f08f5f9dc3c0df1f#291cb446dc188c7134cb3bd9f08f5f9dc3c0df1f"
 dependencies = [
  "objc2",
  "objc2-app-kit",
